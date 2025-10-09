@@ -1,0 +1,15 @@
+package io.quarkiverse.quarkus.scylladb.orm.mapping;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface PartitionKey {
+    /**
+     * Order for composite partition keys (0 = first, 1 = second, etc.)
+     */
+    int ordinal() default 0;
+}
