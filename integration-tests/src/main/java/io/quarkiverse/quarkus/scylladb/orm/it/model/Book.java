@@ -2,6 +2,7 @@ package io.quarkiverse.quarkus.scylladb.orm.it.model;
 
 import java.util.UUID;
 
+import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
 
 @Table("book")
@@ -24,12 +25,6 @@ public class Book {
 
     @Column("active")
     private boolean active;
-
-    @Relation
-    private Author author;
-
-    @Relation
-    private List<Chapter> chapters;
 
     public UUID getId() {
         return id;

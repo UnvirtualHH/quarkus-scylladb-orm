@@ -5,10 +5,10 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-import io.quarkiverse.quarkus.scylladb.orm.enums.EnumType;
+import io.quarkiverse.quarkus.scylladb.orm.converter.AttributeConverter;
 
+@Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.FIELD)
-@Retention(RetentionPolicy.CLASS)
-public @interface Enumerated {
-    EnumType value() default EnumType.STRING;
+public @interface Convert {
+    Class<? extends AttributeConverter<?, ?>> value();
 }

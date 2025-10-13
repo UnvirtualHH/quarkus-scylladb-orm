@@ -9,7 +9,7 @@ import javax.lang.model.util.Types;
 import com.palantir.javapoet.ClassName;
 import com.palantir.javapoet.CodeBlock;
 
-import io.quarkiverse.quarkus.scylladb.orm.mapping.EnumType;
+import io.quarkiverse.quarkus.scylladb.orm.enums.EnumType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Enumerated;
 import io.quarkiverse.quarkus.scylladb.orm.processor.TypeHandler;
 

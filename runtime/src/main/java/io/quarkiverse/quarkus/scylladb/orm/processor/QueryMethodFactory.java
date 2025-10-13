@@ -11,13 +11,10 @@ import javax.lang.model.util.ElementFilter;
 
 import com.palantir.javapoet.*;
 
+import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
-import io.quarkiverse.quarkus.scylladb.orm.mapping.ReturnType;
 
-/**
- * Generates repository methods from @Queries / @Query annotations for Scylla.
- */
 final class QueryMethodFactory {
 
     private static final Pattern PARAM_PATTERN = Pattern.compile(":([A-Za-z_][A-Za-z0-9_]*)");
@@ -27,31 +24,22 @@ final class QueryMethodFactory {
 
     static List<MethodSpec> buildQueryMethods(TypeElement entityType, boolean reactive, ProcessingEnvironment env) {
         List<MethodSpec> methods = new ArrayList<>();
-
         Queries queriesAnnotation = entityType.getAnnotation(Queries.class);
-        if (queriesAnnotation == null) {
+        if (queriesAnnotation == null)
             return methods;
-        }
-
         for (Query q : queriesAnnotation.value()) {
             methods.add(buildMethodForQuery(entityType, q, reactive, env));
         }
-
         return methods;
     }
 
-    private static MethodSpec buildMethodForQuery(
-            TypeElement entityType,
-            Query q,
-            boolean reactive,
+    private static MethodSpec buildMethodForQuery(TypeElement entityType, Query q, boolean reactive,
             ProcessingEnvironment env) {
-
         String methodName = q.name();
         String cql = q.cql();
         ReturnType returnType = q.returnType();
 
         List<String> paramNames = extractParamNames(cql);
-
         MethodSpec.Builder mb = MethodSpec.methodBuilder(methodName)
                 .addModifiers(Modifier.PUBLIC)
                 .addStatement("String query = $S", cql);
@@ -62,107 +50,182 @@ final class QueryMethodFactory {
         }
 
         boolean useMap = paramNames.size() > 1;
-
         if (useMap) {
             mb.addStatement("$T<String,Object> params = new $T<>()", Map.class, HashMap.class);
-            for (String p : paramNames) {
+            for (String p : paramNames)
                 mb.addStatement("params.put($S, $L)", p, p);
-            }
         }
 
-        switch (returnType) {
-            case LIST -> {
-                if (reactive) {
-                    mb.returns(ParameterizedTypeName.get(
-                            ClassName.get("io.smallrye.mutiny", "Multi"),
-                            TypeName.get(entityType.asType())));
-                } else {
-                    mb.returns(ParameterizedTypeName.get(
-                            ClassName.get(List.class),
-                            TypeName.get(entityType.asType())));
-                }
-                if (paramNames.isEmpty()) {
-                    mb.addStatement("return query(query)");
-                } else if (useMap) {
-                    mb.addStatement("return query(query, params)");
-                } else {
-                    mb.addStatement("return query(query, $L)", paramNames.get(0));
-                }
-            }
-            case SINGLE -> {
-                if (reactive) {
-                    mb.returns(ParameterizedTypeName.get(
-                            ClassName.get("io.smallrye.mutiny", "Uni"),
-                            TypeName.get(entityType.asType())));
-                } else {
-                    mb.returns(TypeName.get(entityType.asType()));
-                }
-                if (paramNames.isEmpty()) {
-                    mb.addStatement("return querySingle(query)");
-                } else if (useMap) {
-                    mb.addStatement("return querySingle(query, params)");
-                } else {
-                    mb.addStatement("return querySingle(query, $L)", paramNames.get(0));
-                }
-            }
-            case VOID -> {
-                if (reactive) {
-                    mb.returns(ParameterizedTypeName.get(
-                            ClassName.get("io.smallrye.mutiny", "Uni"),
-                            ClassName.get(Void.class)));
-                    if (paramNames.isEmpty()) {
-                        mb.addStatement("return execute(query)");
-                    } else if (useMap) {
-                        mb.addStatement("return execute(query, params)");
-                    } else {
-                        mb.addStatement("return execute(query, $L)", paramNames.get(0));
-                    }
-                } else {
-                    mb.returns(TypeName.VOID);
-                    if (paramNames.isEmpty()) {
-                        mb.addStatement("execute(query)");
-                    } else if (useMap) {
-                        mb.addStatement("execute(query, params)");
-                    } else {
-                        mb.addStatement("execute(query, $L)", paramNames.get(0));
-                    }
-                }
-            }
-            case SCALAR -> {
-                if (reactive) {
-                    mb.returns(ParameterizedTypeName.get(
-                            ClassName.get("io.smallrye.mutiny", "Uni"),
-                            ClassName.get(Long.class)));
-                } else {
-                    mb.returns(ClassName.get(Long.class));
-                }
-                if (paramNames.isEmpty()) {
-                    mb.addStatement("return queryScalar(query, row -> row.getLong(0))");
-                } else if (useMap) {
-                    mb.addStatement("return queryScalar(query, row -> row.getLong(0), params)");
-                } else {
-                    mb.addStatement("return queryScalar(query, row -> row.getLong(0), $L)", paramNames.get(0));
-                }
-            }
+        boolean isSelect = isSelect(cql);
+        boolean isWrite = isWrite(cql);
+        boolean isConditional = isConditional(cql);
+        boolean isSchema = isSchema(cql);
+
+        if (isSelect) {
+            generateSelectMethodBody(mb, entityType, reactive, returnType, paramNames, useMap);
+        } else if (isConditional) {
+            generateConditionalMethodBody(mb, entityType, reactive, returnType, paramNames, useMap);
+        } else if (isWrite || isSchema) {
+            generateExecuteMethodBody(mb, reactive, returnType, paramNames, useMap);
+        } else {
+            generateExecuteMethodBody(mb, reactive, returnType, paramNames, useMap);
         }
 
         return mb.build();
     }
 
-    private static List<String> extractParamNames(String cql) {
-        Matcher matcher = PARAM_PATTERN.matcher(cql);
-        List<String> params = new ArrayList<>();
-        while (matcher.find()) {
-            params.add(matcher.group(1));
+    private static boolean isSelect(String cql) {
+        return cql.trim().toUpperCase(Locale.ROOT).startsWith("SELECT");
+    }
+
+    private static boolean isWrite(String cql) {
+        return cql.toUpperCase(Locale.ROOT).matches(".*\\b(INSERT|UPDATE|DELETE|TRUNCATE)\\b.*");
+    }
+
+    private static boolean isConditional(String cql) {
+        return cql.toUpperCase(Locale.ROOT).matches(".*\\bIF\\s+(EXISTS|NOT\\s+EXISTS|.*=.*)\\b.*");
+    }
+
+    private static boolean isSchema(String cql) {
+        return cql.toUpperCase(Locale.ROOT).matches(".*\\b(CREATE|ALTER|DROP)\\b.*");
+    }
+
+    private static void generateSelectMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
+            ReturnType returnType, List<String> paramNames, boolean useMap) {
+        switch (returnType) {
+            case LIST -> {
+                if (reactive)
+                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Multi"),
+                            TypeName.get(entityType.asType())));
+                else
+                    mb.returns(ParameterizedTypeName.get(ClassName.get(List.class), TypeName.get(entityType.asType())));
+                addCall(mb, "query", paramNames, useMap, true);
+            }
+            case SINGLE -> {
+                if (reactive)
+                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
+                            TypeName.get(entityType.asType())));
+                else
+                    mb.returns(TypeName.get(entityType.asType()));
+                addCall(mb, "querySingle", paramNames, useMap, true);
+            }
+            case SCALAR -> {
+                if (reactive)
+                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
+                            ClassName.get(Long.class)));
+                else
+                    mb.returns(ClassName.get(Long.class));
+                addCall(mb, "queryScalar", paramNames, useMap, true);
+            }
+            case VOID -> {
+                if (reactive)
+                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
+                            ClassName.get(Void.class)));
+                else
+                    mb.returns(TypeName.VOID);
+                addCall(mb, "execute", paramNames, useMap, reactive);
+            }
         }
+    }
+
+    private static void generateConditionalMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
+            ReturnType returnType, List<String> paramNames, boolean useMap) {
+        if (reactive)
+            mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
+                    TypeName.get(entityType.asType())));
+        else
+            mb.returns(TypeName.get(entityType.asType()));
+        addCall(mb, "querySingle", paramNames, useMap, true);
+    }
+
+    private static void generateExecuteMethodBody(MethodSpec.Builder mb, boolean reactive, ReturnType returnType,
+            List<String> paramNames, boolean useMap) {
+        if (returnType == ReturnType.SCALAR) {
+            if (reactive)
+                mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
+                        ClassName.get(Long.class)));
+            else
+                mb.returns(ClassName.get(Long.class));
+            addCall(mb, "queryScalar", paramNames, useMap, true);
+            return;
+        }
+        if (reactive)
+            mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
+                    ClassName.get(Void.class)));
+        else
+            mb.returns(TypeName.VOID);
+        addCall(mb, "execute", paramNames, useMap, reactive);
+    }
+
+    private static void addCall(MethodSpec.Builder mb, String methodName, List<String> paramNames,
+            boolean useMap, boolean hasReturn) {
+        String prefix = hasReturn ? "return " : "";
+        if (paramNames.isEmpty())
+            mb.addStatement(prefix + "$L(query)", methodName);
+        else if (useMap)
+            mb.addStatement(prefix + "$L(query, params)", methodName);
+        else
+            mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramNames));
+    }
+
+    private static List<String> extractParamNames(String cql) {
+        List<String> params = new ArrayList<>();
+        Matcher matcher = PARAM_PATTERN.matcher(cql);
+        while (matcher.find())
+            params.add(matcher.group(1));
+        if (params.isEmpty() && cql.contains("?"))
+            params.addAll(guessParamNamesFromCql(cql));
         return params;
     }
 
-    private static String joinParams(List<String> paramNames) {
-        if (paramNames.isEmpty()) {
-            return "";
+    private static List<String> guessParamNamesFromCql(String cql) {
+        List<String> guessed = new ArrayList<>();
+        String upper = cql.toUpperCase(Locale.ROOT);
+        if (upper.contains("INSERT INTO") && upper.contains("VALUES")) {
+            int openParen = cql.indexOf('(');
+            int closeParen = cql.indexOf(')', openParen);
+            if (openParen != -1 && closeParen != -1) {
+                String colsSection = cql.substring(openParen + 1, closeParen);
+                for (String col : colsSection.split(",")) {
+                    String clean = col.trim().replace("\"", "").replace("`", "");
+                    guessed.add(toCamelCase(clean));
+                }
+            }
+        } else if (upper.contains("UPDATE") && upper.contains("SET")) {
+            String afterSet = cql.substring(upper.indexOf("SET") + 3);
+            String[] parts = afterSet.split("WHERE")[0].split(",");
+            for (String p : parts) {
+                if (p.contains("=")) {
+                    String left = p.split("=")[0].trim().replace("\"", "").replace("`", "");
+                    guessed.add(toCamelCase(left));
+                }
+            }
+            Matcher m = Pattern.compile("(\\w+)\\s*=\\s*\\?").matcher(cql);
+            while (m.find()) {
+                String col = m.group(1);
+                if (!guessed.contains(toCamelCase(col)))
+                    guessed.add(toCamelCase(col));
+            }
+        } else if (upper.contains("DELETE FROM") && upper.contains("WHERE")) {
+            Matcher m = Pattern.compile("(\\w+)\\s*=\\s*\\?").matcher(cql);
+            while (m.find())
+                guessed.add(toCamelCase(m.group(1)));
+        } else {
+            int count = (int) cql.chars().filter(ch -> ch == '?').count();
+            for (int i = 0; i < count; i++)
+                guessed.add("param" + (i + 1));
         }
-        return String.join(", ", paramNames);
+        return guessed;
+    }
+
+    private static String toCamelCase(String column) {
+        String[] parts = column.split("_");
+        StringBuilder sb = new StringBuilder(parts[0]);
+        for (int i = 1; i < parts.length; i++)
+            if (!parts[i].isEmpty())
+                sb.append(parts[i].substring(0, 1).toUpperCase(Locale.ROOT))
+                        .append(parts[i].substring(1).toLowerCase(Locale.ROOT));
+        return sb.toString();
     }
 
     private static TypeName resolveParamType(TypeElement entityType, String paramName, Query q, ProcessingEnvironment env) {
@@ -175,15 +238,11 @@ final class QueryMethodFactory {
                 }
             }
         }
-
         String pLower = paramName.toLowerCase(Locale.ROOT);
         for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
-            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower)) {
+            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower))
                 return TypeName.get(field.asType());
-            }
         }
-
         return ClassName.get(Object.class);
     }
-
 }

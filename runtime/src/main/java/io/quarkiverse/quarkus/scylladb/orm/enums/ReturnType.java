@@ -1,4 +1,4 @@
-package io.quarkiverse.quarkus.scylladb.orm.mapping;
+package io.quarkiverse.quarkus.scylladb.orm.enums;
 
 public enum ReturnType {
 

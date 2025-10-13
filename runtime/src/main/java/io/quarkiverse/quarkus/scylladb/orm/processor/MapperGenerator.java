@@ -261,7 +261,7 @@ public class MapperGenerator {
     private static String getterName(VariableElement field) {
         String name = capitalize(field.getSimpleName().toString());
         String type = field.asType().toString();
-        if (type.equals("boolean") || type.equals("java.lang.Boolean")) {
+        if (type.equals("boolean")) {
             return "is" + name;
         }
         return "get" + name;

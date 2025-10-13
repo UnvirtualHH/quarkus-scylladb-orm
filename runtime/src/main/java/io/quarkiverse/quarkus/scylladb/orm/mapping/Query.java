@@ -5,6 +5,8 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
+
 @Retention(RetentionPolicy.CLASS) //
 @Target(ElementType.TYPE)
 public @interface Query {

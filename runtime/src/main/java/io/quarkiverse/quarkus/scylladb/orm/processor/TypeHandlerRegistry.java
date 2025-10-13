@@ -10,13 +10,15 @@ import javax.lang.model.util.Types;
 
 import jakarta.enterprise.context.ApplicationScoped;
 
+import io.quarkiverse.quarkus.scylladb.orm.processor.types.ConverterTypeHandler;
 import io.quarkiverse.quarkus.scylladb.orm.processor.types.EnumTypeHandler;
 
 @ApplicationScoped
 public class TypeHandlerRegistry {
 
     private static final List<TypeHandler> handlers = List.of(
-            new EnumTypeHandler());
+            new EnumTypeHandler(),
+            new ConverterTypeHandler());
 
     private static Types types;
     private static Elements elements;
