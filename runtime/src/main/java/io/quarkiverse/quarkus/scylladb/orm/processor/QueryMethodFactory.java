@@ -18,6 +18,7 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 final class QueryMethodFactory {
 
     private static final Pattern PARAM_PATTERN = Pattern.compile(":([A-Za-z_][A-Za-z0-9_]*)");
+    private static final Pattern COLUMN_PATTERN = Pattern.compile("(\\w+)\\s*(=|<|>|<=|>=|IN)\\s*\\?");
 
     private QueryMethodFactory() {
     }
@@ -39,6 +40,10 @@ final class QueryMethodFactory {
         String cql = q.cql();
         ReturnType returnType = q.returnType();
 
+        if (returnType == ReturnType.LIST && cql.toUpperCase(Locale.ROOT).matches(".*\\bLIMIT\\s+1\\b.*")) {
+            returnType = ReturnType.SINGLE;
+        }
+
         List<String> paramNames = extractParamNames(cql);
         MethodSpec.Builder mb = MethodSpec.methodBuilder(methodName)
                 .addModifiers(Modifier.PUBLIC)
@@ -52,8 +57,9 @@ final class QueryMethodFactory {
         boolean useMap = paramNames.size() > 1;
         if (useMap) {
             mb.addStatement("$T<String,Object> params = new $T<>()", Map.class, HashMap.class);
-            for (String p : paramNames)
+            for (String p : paramNames) {
                 mb.addStatement("params.put($S, $L)", p, p);
+            }
         }
 
         boolean isSelect = isSelect(cql);
@@ -74,6 +80,8 @@ final class QueryMethodFactory {
         return mb.build();
     }
 
+    // ---------------- Query Typ Erkennung ----------------
+
     private static boolean isSelect(String cql) {
         return cql.trim().toUpperCase(Locale.ROOT).startsWith("SELECT");
     }
@@ -90,6 +98,8 @@ final class QueryMethodFactory {
         return cql.toUpperCase(Locale.ROOT).matches(".*\\b(CREATE|ALTER|DROP)\\b.*");
     }
 
+    // ---------------- Body Generation ----------------
+
     private static void generateSelectMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
             ReturnType returnType, List<String> paramNames, boolean useMap) {
         switch (returnType) {
@@ -98,7 +108,8 @@ final class QueryMethodFactory {
                     mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Multi"),
                             TypeName.get(entityType.asType())));
                 else
-                    mb.returns(ParameterizedTypeName.get(ClassName.get(List.class), TypeName.get(entityType.asType())));
+                    mb.returns(ParameterizedTypeName.get(ClassName.get(List.class),
+                            TypeName.get(entityType.asType())));
                 addCall(mb, "query", paramNames, useMap, true);
             }
             case SINGLE -> {
@@ -168,6 +179,8 @@ final class QueryMethodFactory {
             mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramNames));
     }
 
+    // ---------------- Param Handling ----------------
+
     private static List<String> extractParamNames(String cql) {
         List<String> params = new ArrayList<>();
         Matcher matcher = PARAM_PATTERN.matcher(cql);
@@ -181,50 +194,33 @@ final class QueryMethodFactory {
     private static List<String> guessParamNamesFromCql(String cql) {
         List<String> guessed = new ArrayList<>();
         String upper = cql.toUpperCase(Locale.ROOT);
-        if (upper.contains("INSERT INTO") && upper.contains("VALUES")) {
-            int openParen = cql.indexOf('(');
-            int closeParen = cql.indexOf(')', openParen);
-            if (openParen != -1 && closeParen != -1) {
-                String colsSection = cql.substring(openParen + 1, closeParen);
-                for (String col : colsSection.split(",")) {
-                    String clean = col.trim().replace("\"", "").replace("`", "");
-                    guessed.add(toCamelCase(clean));
-                }
-            }
-        } else if (upper.contains("UPDATE") && upper.contains("SET")) {
-            String afterSet = cql.substring(upper.indexOf("SET") + 3);
-            String[] parts = afterSet.split("WHERE")[0].split(",");
-            for (String p : parts) {
-                if (p.contains("=")) {
-                    String left = p.split("=")[0].trim().replace("\"", "").replace("`", "");
-                    guessed.add(toCamelCase(left));
-                }
-            }
-            Matcher m = Pattern.compile("(\\w+)\\s*=\\s*\\?").matcher(cql);
-            while (m.find()) {
-                String col = m.group(1);
-                if (!guessed.contains(toCamelCase(col)))
-                    guessed.add(toCamelCase(col));
-            }
-        } else if (upper.contains("DELETE FROM") && upper.contains("WHERE")) {
-            Matcher m = Pattern.compile("(\\w+)\\s*=\\s*\\?").matcher(cql);
-            while (m.find())
-                guessed.add(toCamelCase(m.group(1)));
-        } else {
-            int count = (int) cql.chars().filter(ch -> ch == '?').count();
-            for (int i = 0; i < count; i++)
-                guessed.add("param" + (i + 1));
+
+        Matcher m = COLUMN_PATTERN.matcher(cql);
+        while (m.find()) {
+            guessed.add(toCamelCase(m.group(1)));
         }
+
+        int questionCount = (int) cql.chars().filter(ch -> ch == '?').count();
+        while (guessed.size() < questionCount) {
+            if (guessed.size() == questionCount - 1 && upper.contains("LIMIT ?")) {
+                guessed.add("max");
+            } else {
+                guessed.add("param" + (guessed.size() + 1));
+            }
+        }
+
         return guessed;
     }
 
     private static String toCamelCase(String column) {
         String[] parts = column.split("_");
         StringBuilder sb = new StringBuilder(parts[0]);
-        for (int i = 1; i < parts.length; i++)
-            if (!parts[i].isEmpty())
+        for (int i = 1; i < parts.length; i++) {
+            if (!parts[i].isEmpty()) {
                 sb.append(parts[i].substring(0, 1).toUpperCase(Locale.ROOT))
                         .append(parts[i].substring(1).toLowerCase(Locale.ROOT));
+            }
+        }
         return sb.toString();
     }
 
@@ -238,11 +234,18 @@ final class QueryMethodFactory {
                 }
             }
         }
+
+        if (paramName.equalsIgnoreCase("limit")) {
+            return ClassName.get(Integer.class);
+        }
+
         String pLower = paramName.toLowerCase(Locale.ROOT);
         for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
-            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower))
+            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower)) {
                 return TypeName.get(field.asType());
+            }
         }
+
         return ClassName.get(Object.class);
     }
 }

@@ -88,11 +88,30 @@ public class MapperGenerator {
                 continue;
 
             String colName = resolveColumnName(field);
+            String typeString = field.asType().toString();
             Optional<TypeHandler> handler = TypeHandlerRegistry.findHandler(field,
                     env.getTypeUtils(), env.getElementUtils());
 
             if (handler.isPresent()) {
                 builder.addCode(handler.get().generateSetterCode(field, "instance", "row", colName));
+                continue;
+            }
+
+            // --- Special handling for generic collection types ---
+            if (typeString.startsWith("java.util.Set")
+                    || typeString.startsWith("java.util.List")
+                    || typeString.startsWith("java.util.Map")) {
+
+                builder.beginControlFlow("if (row.get($S, new $T<$L>() {}) != null)",
+                        colName,
+                        ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
+                        typeString)
+                        .addStatement("instance.$L(row.get($S, new $T<$L>() {}))",
+                                setterName(field),
+                                colName,
+                                ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
+                                typeString)
+                        .endControlFlow();
             } else {
                 builder.beginControlFlow("if (row.get($S, $T.class) != null)", colName, TypeName.get(field.asType()))
                         .addStatement("instance.$L(row.get($S, $T.class))",
