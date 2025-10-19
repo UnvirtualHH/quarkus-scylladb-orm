@@ -34,11 +34,11 @@ public class MapperGenerator {
         MethodSpec getEntityTypeMethod = generateGetEntityTypeMethod(entityType);
         MethodSpec registerSelfMethod = generateRegisterSelfMethod(entityType);
 
-        MethodSpec getPkComponents = generateGetKeyComponents(entityType, true);
-        MethodSpec getCkComponents = generateGetKeyComponents(entityType, false);
+        MethodSpec getPkComponents = generateGetKeyComponents(entityType, true, processingEnv);
+        MethodSpec getCkComponents = generateGetKeyComponents(entityType, false, processingEnv);
 
-        MethodSpec getPkNamesArray = generateGetPartitionKeyNamesArray(entityType);
-        MethodSpec getCkNamesArray = generateGetClusteringKeyNamesArray(entityType);
+        MethodSpec getPkNamesArray = generateGetPartitionKeyNamesArray(entityType, processingEnv);
+        MethodSpec getCkNamesArray = generateGetClusteringKeyNamesArray(entityType, processingEnv);
 
         TypeSpec mapperClass = TypeSpec.classBuilder(mapperClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
@@ -83,7 +83,7 @@ public class MapperGenerator {
                 .addStatement("$T instance = new $T()",
                         TypeName.get(entityType.asType()), TypeName.get(entityType.asType()));
 
-        for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
+        for (VariableElement field : allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
@@ -133,7 +133,7 @@ public class MapperGenerator {
                 .addStatement("$T<String,Object> props = new $T<>()",
                         Map.class, java.util.HashMap.class);
 
-        for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
+        for (VariableElement field : allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
@@ -184,8 +184,8 @@ public class MapperGenerator {
                 .build();
     }
 
-    private MethodSpec generateGetKeyComponents(TypeElement entityType, boolean partition) {
-        var keys = partition ? partitionKeyFields(entityType) : clusteringKeyFields(entityType);
+    private MethodSpec generateGetKeyComponents(TypeElement entityType, boolean partition, ProcessingEnvironment env) {
+        var keys = partition ? partitionKeyFields(entityType, env) : clusteringKeyFields(entityType, env);
 
         var listType = ParameterizedTypeName.get(
                 ClassName.get(List.class),
@@ -227,8 +227,8 @@ public class MapperGenerator {
         return b.build();
     }
 
-    private MethodSpec generateGetPartitionKeyNamesArray(TypeElement entityType) {
-        var pks = partitionKeyFields(entityType);
+    private MethodSpec generateGetPartitionKeyNamesArray(TypeElement entityType, ProcessingEnvironment env) {
+        var pks = partitionKeyFields(entityType, env);
         MethodSpec.Builder b = MethodSpec.methodBuilder("getPartitionKeyNames")
                 .addAnnotation(Override.class)
                 .addModifiers(Modifier.PUBLIC)
@@ -247,8 +247,8 @@ public class MapperGenerator {
         return b.build();
     }
 
-    private MethodSpec generateGetClusteringKeyNamesArray(TypeElement entityType) {
-        var cks = clusteringKeyFields(entityType);
+    private MethodSpec generateGetClusteringKeyNamesArray(TypeElement entityType, ProcessingEnvironment env) {
+        var cks = clusteringKeyFields(entityType, env);
         MethodSpec.Builder b = MethodSpec.methodBuilder("getClusteringKeyNames")
                 .addAnnotation(Override.class)
                 .addModifiers(Modifier.PUBLIC)
@@ -268,6 +268,19 @@ public class MapperGenerator {
     }
 
     // === Helper ===
+
+    private static List<VariableElement> allFields(TypeElement type, ProcessingEnvironment env) {
+        List<VariableElement> fields = new ArrayList<>();
+        while (type != null) {
+            fields.addAll(ElementFilter.fieldsIn(type.getEnclosedElements()));
+            var superType = type.getSuperclass();
+            if (superType == null || superType.toString().equals("java.lang.Object")) {
+                break;
+            }
+            type = (TypeElement) env.getTypeUtils().asElement(superType);
+        }
+        return fields;
+    }
 
     private static String resolveColumnName(VariableElement field) {
         Column colAnn = field.getAnnotation(Column.class);
@@ -306,19 +319,19 @@ public class MapperGenerator {
     private record KeyField(VariableElement field, int ordinal) {
     }
 
-    private static List<KeyField> partitionKeyFields(TypeElement entityType) {
-        return ElementFilter.fieldsIn(entityType.getEnclosedElements()).stream()
+    private static List<KeyField> partitionKeyFields(TypeElement entityType, ProcessingEnvironment env) {
+        return allFields(entityType, env).stream()
                 .filter(f -> f.getAnnotation(PartitionKey.class) != null)
                 .map(f -> new KeyField(f, f.getAnnotation(PartitionKey.class).ordinal()))
-                .sorted(java.util.Comparator.comparingInt(KeyField::ordinal))
+                .sorted(Comparator.comparingInt(KeyField::ordinal))
                 .toList();
     }
 
-    private static List<KeyField> clusteringKeyFields(TypeElement entityType) {
-        return ElementFilter.fieldsIn(entityType.getEnclosedElements()).stream()
+    private static List<KeyField> clusteringKeyFields(TypeElement entityType, ProcessingEnvironment env) {
+        return allFields(entityType, env).stream()
                 .filter(f -> f.getAnnotation(ClusteringKey.class) != null)
                 .map(f -> new KeyField(f, f.getAnnotation(ClusteringKey.class).ordinal()))
-                .sorted(java.util.Comparator.comparingInt(KeyField::ordinal))
+                .sorted(Comparator.comparingInt(KeyField::ordinal))
                 .toList();
     }
 }
