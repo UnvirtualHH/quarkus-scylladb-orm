@@ -15,6 +15,10 @@ import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 
+/**
+ * Factory for generating query methods from @Queries annotations.
+ * Automatically adds .name() for @Enumerated parameters.
+ */
 final class QueryMethodFactory {
 
     private static final Pattern PARAM_PATTERN = Pattern.compile(":([A-Za-z_][A-Za-z0-9_]*)");
@@ -49,24 +53,33 @@ final class QueryMethodFactory {
                 .addModifiers(Modifier.PUBLIC)
                 .addStatement("String query = $S", cql);
 
+        // Add method parameters
         for (String p : paramNames) {
             TypeName type = resolveParamType(entityType, p, q, env);
             mb.addParameter(type, p);
         }
 
+        // Build params map
         boolean useMap = paramNames.size() > 1;
         if (useMap) {
             mb.addStatement("$T<String,Object> params = new $T<>()", Map.class, HashMap.class);
             for (String p : paramNames) {
-                mb.addStatement("params.put($S, $L)", p, p);
+                VariableElement field = findFieldByName(entityType, p);
+                if (field != null && hasEnumeratedAnnotation(field)) {
+                    mb.addStatement("params.put($S, $L != null ? $L.name() : null)", p, p, p);
+                } else {
+                    mb.addStatement("params.put($S, $L)", p, p);
+                }
             }
         }
 
+        // Detect query type
         boolean isSelect = isSelect(cql);
         boolean isWrite = isWrite(cql);
         boolean isConditional = isConditional(cql);
         boolean isSchema = isSchema(cql);
 
+        // Build method body
         if (isSelect) {
             generateSelectMethodBody(mb, entityType, reactive, returnType, paramNames, useMap);
         } else if (isConditional) {
@@ -242,10 +255,29 @@ final class QueryMethodFactory {
         String pLower = paramName.toLowerCase(Locale.ROOT);
         for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
             if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower)) {
+                if (hasEnumeratedAnnotation(field)) {
+                    return TypeName.get(field.asType());
+                }
                 return TypeName.get(field.asType());
             }
         }
 
         return ClassName.get(Object.class);
+    }
+
+    // ---------------- Helpers ----------------
+
+    private static VariableElement findFieldByName(TypeElement entityType, String name) {
+        for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
+            if (field.getSimpleName().toString().equalsIgnoreCase(name)) {
+                return field;
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasEnumeratedAnnotation(VariableElement field) {
+        return field.getAnnotationMirrors().stream()
+                .anyMatch(a -> a.getAnnotationType().toString().endsWith(".Enumerated"));
     }
 }
