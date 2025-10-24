@@ -18,11 +18,14 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 /**
  * Factory for generating query methods from @Queries annotations.
  * Automatically adds .name() for @Enumerated parameters.
+ * Supports structural parameters (e.g. :limit, :order, :sort) via String interpolation.
  */
 final class QueryMethodFactory {
 
     private static final Pattern PARAM_PATTERN = Pattern.compile(":([A-Za-z_][A-Za-z0-9_]*)");
     private static final Pattern COLUMN_PATTERN = Pattern.compile("(\\w+)\\s*(=|<|>|<=|>=|IN)\\s*\\?");
+
+    private static final Set<String> STRUCTURAL_PARAMS = Set.of("limit", "order", "orderby", "sort", "offset");
 
     private QueryMethodFactory() {
     }
@@ -32,6 +35,7 @@ final class QueryMethodFactory {
         Queries queriesAnnotation = entityType.getAnnotation(Queries.class);
         if (queriesAnnotation == null)
             return methods;
+
         for (Query q : queriesAnnotation.value()) {
             methods.add(buildMethodForQuery(entityType, q, reactive, env));
         }
@@ -40,6 +44,7 @@ final class QueryMethodFactory {
 
     private static MethodSpec buildMethodForQuery(TypeElement entityType, Query q, boolean reactive,
             ProcessingEnvironment env) {
+
         String methodName = q.name();
         String cql = q.cql();
         ReturnType returnType = q.returnType();
@@ -48,22 +53,42 @@ final class QueryMethodFactory {
             returnType = ReturnType.SINGLE;
         }
 
+        // Extract params
         List<String> paramNames = extractParamNames(cql);
-        MethodSpec.Builder mb = MethodSpec.methodBuilder(methodName)
-                .addModifiers(Modifier.PUBLIC)
-                .addStatement("String query = $S", cql);
+        List<String> structuralParams = new ArrayList<>();
+        for (String p : paramNames) {
+            if (isStructuralParam(p)) {
+                structuralParams.add(p);
+                cql = cql.replace(":" + p, "%s");
+            }
+        }
 
-        // Add method parameters
+        List<String> bindableParams = new ArrayList<>(paramNames);
+        bindableParams.removeAll(structuralParams);
+
+        MethodSpec.Builder mb = MethodSpec.methodBuilder(methodName)
+                .addModifiers(Modifier.PUBLIC);
+
+        // Add parameters
         for (String p : paramNames) {
             TypeName type = resolveParamType(entityType, p, q, env);
             mb.addParameter(type, p);
         }
 
-        // Build params map
-        boolean useMap = paramNames.size() > 1;
-        if (useMap) {
+        // Build query string (handle structural params with String.format)
+        if (!structuralParams.isEmpty()) {
+            mb.addStatement("String query = String.format($S, $L)",
+                    cql,
+                    String.join(", ", structuralParams));
+        } else {
+            mb.addStatement("String query = $S", cql);
+        }
+
+        // Build params map only for bindable params
+        boolean useMap = bindableParams.size() > 1;
+        if (!bindableParams.isEmpty()) {
             mb.addStatement("$T<String,Object> params = new $T<>()", Map.class, HashMap.class);
-            for (String p : paramNames) {
+            for (String p : bindableParams) {
                 VariableElement field = findFieldByName(entityType, p);
                 if (field != null && hasEnumeratedAnnotation(field)) {
                     mb.addStatement("params.put($S, $L != null ? $L.name() : null)", p, p, p);
@@ -79,21 +104,27 @@ final class QueryMethodFactory {
         boolean isConditional = isConditional(cql);
         boolean isSchema = isSchema(cql);
 
-        // Build method body
+        // Generate method body
         if (isSelect) {
-            generateSelectMethodBody(mb, entityType, reactive, returnType, paramNames, useMap);
+            generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
         } else if (isConditional) {
-            generateConditionalMethodBody(mb, entityType, reactive, returnType, paramNames, useMap);
+            generateConditionalMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
         } else if (isWrite || isSchema) {
-            generateExecuteMethodBody(mb, reactive, returnType, paramNames, useMap);
+            generateExecuteMethodBody(mb, reactive, returnType, bindableParams, useMap);
         } else {
-            generateExecuteMethodBody(mb, reactive, returnType, paramNames, useMap);
+            generateExecuteMethodBody(mb, reactive, returnType, bindableParams, useMap);
         }
 
         return mb.build();
     }
 
-    // ---------------- Query Typ Erkennung ----------------
+    // --------------------------------------------------
+    // Query Type Helpers
+    // --------------------------------------------------
+
+    private static boolean isStructuralParam(String name) {
+        return STRUCTURAL_PARAMS.contains(name.toLowerCase(Locale.ROOT));
+    }
 
     private static boolean isSelect(String cql) {
         return cql.trim().toUpperCase(Locale.ROOT).startsWith("SELECT");
@@ -111,7 +142,9 @@ final class QueryMethodFactory {
         return cql.toUpperCase(Locale.ROOT).matches(".*\\b(CREATE|ALTER|DROP)\\b.*");
     }
 
-    // ---------------- Body Generation ----------------
+    // --------------------------------------------------
+    // Body Generation
+    // --------------------------------------------------
 
     private static void generateSelectMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
             ReturnType returnType, List<String> paramNames, boolean useMap) {
@@ -192,7 +225,9 @@ final class QueryMethodFactory {
             mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramNames));
     }
 
-    // ---------------- Param Handling ----------------
+    // --------------------------------------------------
+    // Param Handling
+    // --------------------------------------------------
 
     private static List<String> extractParamNames(String cql) {
         List<String> params = new ArrayList<>();
@@ -221,7 +256,6 @@ final class QueryMethodFactory {
                 guessed.add("param" + (guessed.size() + 1));
             }
         }
-
         return guessed;
     }
 
@@ -247,25 +281,19 @@ final class QueryMethodFactory {
                 }
             }
         }
-
-        if (paramName.equalsIgnoreCase("limit")) {
+        if (paramName.equalsIgnoreCase("limit"))
             return ClassName.get(Integer.class);
-        }
-
         String pLower = paramName.toLowerCase(Locale.ROOT);
         for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
-            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower)) {
-                if (hasEnumeratedAnnotation(field)) {
-                    return TypeName.get(field.asType());
-                }
+            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower))
                 return TypeName.get(field.asType());
-            }
         }
-
         return ClassName.get(Object.class);
     }
 
-    // ---------------- Helpers ----------------
+    // --------------------------------------------------
+    // Helpers
+    // --------------------------------------------------
 
     private static VariableElement findFieldByName(TypeElement entityType, String name) {
         for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {

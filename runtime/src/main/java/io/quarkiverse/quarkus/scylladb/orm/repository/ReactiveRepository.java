@@ -11,6 +11,9 @@ import java.util.stream.StreamSupport;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.*;
 
+import io.quarkiverse.quarkus.scylladb.orm.exception.ScyllaMappingException;
+import io.quarkiverse.quarkus.scylladb.orm.exception.ScyllaQueryException;
+import io.quarkiverse.quarkus.scylladb.orm.exception.ScyllaWriteException;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapper;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.KeyComponent;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Pageable;
@@ -267,17 +270,29 @@ public abstract class ReactiveRepository<T, ID> {
                 .map(rs -> {
                     Row row = rs.one();
                     return row != null ? mapper.map(row) : null;
-                });
+                })
+                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err));
     }
 
     protected Multi<T> executeQueryForList(String cql, Object... params) {
         return Multi.createFrom().completionStage(() -> prepareAndExecute(cql, params))
+                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err))
                 .onItem().transformToMultiAndConcatenate(
-                        rs -> Multi.createFrom().iterable(() -> rs.currentPage().iterator()).map(mapper::map));
+                        rs -> Multi.createFrom()
+                                .iterable(() -> rs.currentPage().iterator())
+                                .onItem().transform(row -> {
+                                    try {
+                                        return mapper.map(row);
+                                    } catch (Exception e) {
+                                        throw new ScyllaMappingException(tableName, "Failed to map row", e);
+                                    }
+                                }));
     }
 
     protected Uni<Void> executeUpdate(String cql, Object... params) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, params)).replaceWithVoid();
+        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, params))
+                .replaceWithVoid()
+                .onFailure().transform(err -> new ScyllaWriteException(tableName, cql, params, err));
     }
 
     protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object... params) {
@@ -285,7 +300,8 @@ public abstract class ReactiveRepository<T, ID> {
                 .map(rs -> {
                     Row row = rs.one();
                     return row != null ? mapperFn.apply(row) : null;
-                });
+                })
+                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err));
     }
 
     private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object... params) {
