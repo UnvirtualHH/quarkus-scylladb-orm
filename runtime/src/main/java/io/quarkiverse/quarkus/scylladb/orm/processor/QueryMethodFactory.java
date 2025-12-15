@@ -42,7 +42,8 @@ final class QueryMethodFactory {
     // Allowed values for structural parameters (SQL injection prevention)
     private static final Pattern SAFE_ORDER_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*\\s+(ASC|DESC)$",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern SAFE_COLUMN_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*(,\\s*[A-Za-z_][A-Za-z0-9_]*)*$");
+    private static final Pattern SAFE_COLUMN_PATTERN = Pattern
+            .compile("^[A-Za-z_][A-Za-z0-9_]*(,\\s*[A-Za-z_][A-Za-z0-9_]*)*$");
     private static final Pattern SAFE_INTEGER_PATTERN = Pattern.compile("^\\d+$");
 
     private QueryMethodFactory() {
@@ -76,7 +77,7 @@ final class QueryMethodFactory {
     }
 
     private static MethodSpec buildMethodForQuery(TypeElement entityType, Query q, boolean reactive,
-                                                  ProcessingEnvironment env) {
+            ProcessingEnvironment env) {
 
         String methodName = q.name();
         String cql = q.cql();
@@ -238,7 +239,7 @@ final class QueryMethodFactory {
     // --------------------------------------------------
 
     private static void generateSelectMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
-                                                 ReturnType returnType, List<String> paramNames, boolean useMap) {
+            ReturnType returnType, List<String> paramNames, boolean useMap) {
         switch (returnType) {
             case LIST -> {
                 if (reactive) {
@@ -312,7 +313,7 @@ final class QueryMethodFactory {
     }
 
     private static void generateExecuteMethodBody(MethodSpec.Builder mb, boolean reactive, ReturnType returnType,
-                                                  List<String> paramNames, boolean useMap) {
+            List<String> paramNames, boolean useMap) {
         if (returnType == ReturnType.SCALAR) {
             if (reactive) {
                 mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Long.class)));
@@ -331,7 +332,7 @@ final class QueryMethodFactory {
     }
 
     private static void addCall(MethodSpec.Builder mb, String methodName, List<String> paramNames,
-                                boolean useMap, boolean hasReturn) {
+            boolean useMap, boolean hasReturn) {
         String prefix = hasReturn ? "return " : "";
         if (paramNames.isEmpty()) {
             mb.addStatement(prefix + "$L(query)", methodName);

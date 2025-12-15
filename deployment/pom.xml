@@ -16,7 +16,7 @@
             <artifactId>quarkus-arc-deployment</artifactId>
         </dependency>
         <dependency>
-            <groupId>io.quarkiverse.quarkus-scylladb-orm</groupId>
+            <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
             <artifactId>quarkus-scylladb-orm</artifactId>
             <version>${project.version}</version>
         </dependency>

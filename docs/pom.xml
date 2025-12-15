@@ -16,7 +16,7 @@
     <dependencies>
         <!-- Make sure the doc is built after the other artifacts -->
         <dependency>
-            <groupId>io.quarkiverse.quarkus-scylladb-orm</groupId>
+            <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
             <artifactId>quarkus-scylladb-orm-deployment</artifactId>
             <version>${project.version}</version>
         </dependency>
