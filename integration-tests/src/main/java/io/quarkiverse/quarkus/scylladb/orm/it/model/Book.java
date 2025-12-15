@@ -11,6 +11,7 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
                 @Query.Param(name = "title", type = String.class)
         }),
         @Query(name = "deleteAll", cql = "TRUNCATE book", returnType = ReturnType.VOID),
+        @Query(name = "findAllByTitle", cql = "SELECT * FROM book WHERE title = :title", paramTypes = @Query.Param(name = "title", type = String.class), returnType = ReturnType.LIST),
         @Query(name = "touchAndReturn", cql = "UPDATE book SET active = true WHERE id = :id IF EXISTS", returnType = ReturnType.SINGLE)
 })
 @GenerateRepository(GenerateRepository.RepositoryType.BOTH)

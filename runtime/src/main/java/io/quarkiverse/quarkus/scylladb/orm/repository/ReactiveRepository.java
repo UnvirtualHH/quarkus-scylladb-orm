@@ -27,6 +27,9 @@ import io.smallrye.mutiny.Uni;
  */
 public abstract class ReactiveRepository<T, ID> {
 
+    private static final int UNKNOWN_TOTAL_COUNT = -1;
+    private static final int MAX_PREPARED_STATEMENTS = 1000;
+
     protected final CqlSession session;
     protected final String tableName;
     protected final EntityMapper<T> mapper;
@@ -34,6 +37,10 @@ public abstract class ReactiveRepository<T, ID> {
 
     private final Map<String, PreparedStatement> preparedStatements = new ConcurrentHashMap<>();
 
+    /**
+     * Default constructor for CDI/dependency injection frameworks.
+     * Fields will be null - this instance should not be used directly.
+     */
     public ReactiveRepository() {
         this.session = null;
         this.tableName = null;
@@ -46,10 +53,14 @@ public abstract class ReactiveRepository<T, ID> {
             String tableName,
             EntityMapper<T> mapper,
             ReactiveRepositoryRegistry registry) {
-        this.session = session;
-        this.tableName = tableName;
-        this.mapper = mapper;
+        this.session = Objects.requireNonNull(session, "CqlSession must not be null");
+        this.tableName = Objects.requireNonNull(tableName, "Table name must not be null");
+        this.mapper = Objects.requireNonNull(mapper, "EntityMapper must not be null");
         this.registry = registry;
+
+        if (tableName.isBlank()) {
+            throw new IllegalArgumentException("Table name must not be blank");
+        }
     }
 
     protected abstract Class<T> getEntityType();
@@ -59,15 +70,19 @@ public abstract class ReactiveRepository<T, ID> {
     // ----------------------------------------------------------
 
     private Object[] buildKeyParams(T entity) {
+        Objects.requireNonNull(entity, "Entity must not be null");
+
         List<KeyComponent<?>> pk = mapper.getPartitionKeyComponents(entity);
         List<KeyComponent<?>> ck = mapper.getClusteringKeyComponents(entity);
 
         Object[] params = new Object[pk.size() + ck.size()];
         int i = 0;
-        for (KeyComponent<?> kc : pk)
+        for (KeyComponent<?> kc : pk) {
             params[i++] = kc.value();
-        for (KeyComponent<?> kc : ck)
+        }
+        for (KeyComponent<?> kc : ck) {
             params[i++] = kc.value();
+        }
         return params;
     }
 
@@ -85,15 +100,36 @@ public abstract class ReactiveRepository<T, ID> {
                 .collect(Collectors.joining(" AND "));
     }
 
+    private void validateKeyCount(Object[] keys, int expected) {
+        if (keys == null) {
+            throw new IllegalArgumentException("Keys must not be null");
+        }
+        if (keys.length != expected) {
+            throw new IllegalArgumentException(
+                    "Expected " + expected + " key parts, got " + keys.length);
+        }
+        for (int i = 0; i < keys.length; i++) {
+            if (keys[i] == null) {
+                throw new IllegalArgumentException("Key at index " + i + " must not be null");
+            }
+        }
+    }
+
     // ----------------------------------------------------------
     // Repository API
     // ----------------------------------------------------------
 
     public Uni<T> findById(ID id) {
+        if (id == null) {
+            return Uni.createFrom().failure(new IllegalArgumentException("ID must not be null"));
+        }
+
         String[] pkNames = mapper.getPartitionKeyNames();
         if (pkNames.length != 1) {
-            return Uni.createFrom().failure(new IllegalStateException("findById requires exactly one partition key."));
+            return Uni.createFrom().failure(
+                    new IllegalStateException("findById requires exactly one partition key, found " + pkNames.length));
         }
+
         String cql = String.format("SELECT * FROM %s WHERE %s = ?", tableName, pkNames[0]);
         return executeQueryForOne(cql, id);
     }
@@ -104,26 +140,35 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public Multi<T> findAll(Pageable pageable, Sortable sortable) {
+        Objects.requireNonNull(pageable, "Pageable must not be null");
+
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String cql = String.format("SELECT * FROM %s %s LIMIT %d",
                 tableName, sortClause, pageable.size());
 
-        BoundStatement bound = session.prepare(cql).bind();
+        PreparedStatement prepared = session.prepare(cql);
+        BoundStatement bound = prepared.bind();
+
         if (pageable.pagingState() != null) {
             bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
         }
 
         return Multi.createFrom().completionStage(session.executeAsync(bound).toCompletableFuture())
                 .onItem().transformToMultiAndConcatenate(
-                        rs -> Multi.createFrom().iterable(() -> rs.currentPage().iterator()).map(mapper::map));
+                        rs -> Multi.createFrom().iterable(() -> rs.currentPage().iterator())
+                                .map(mapper::map));
     }
 
     public Uni<Paged<T>> findAllPaged(Pageable pageable, Sortable sortable) {
+        Objects.requireNonNull(pageable, "Pageable must not be null");
+
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String cql = String.format("SELECT * FROM %s %s LIMIT %d",
                 tableName, sortClause, pageable.size());
 
-        BoundStatement bound = session.prepare(cql).bind();
+        PreparedStatement prepared = session.prepare(cql);
+        BoundStatement bound = prepared.bind();
+
         if (pageable.pagingState() != null) {
             bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
         }
@@ -138,7 +183,7 @@ public abstract class ReactiveRepository<T, ID> {
                             ? Objects.requireNonNull(rs.getExecutionInfo().getSafePagingState()).toString()
                             : null;
 
-                    return new Paged<>(content, -1, nextStateStr);
+                    return new Paged<>(content, UNKNOWN_TOTAL_COUNT, nextStateStr);
                 });
     }
 
@@ -148,15 +193,23 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public Uni<Boolean> existsById(ID id) {
+        if (id == null) {
+            return Uni.createFrom().failure(new IllegalArgumentException("ID must not be null"));
+        }
+
         String[] pkNames = mapper.getPartitionKeyNames();
         if (pkNames.length != 1) {
-            return Uni.createFrom().failure(new IllegalStateException("existsById requires exactly one partition key."));
+            return Uni.createFrom().failure(
+                    new IllegalStateException("existsById requires exactly one partition key, found " + pkNames.length));
         }
+
         String cql = String.format("SELECT COUNT(1) as cnt FROM %s WHERE %s = ?", tableName, pkNames[0]);
         return runScalarQuery(cql, row -> row.getLong("cnt") > 0, id);
     }
 
     public Uni<Boolean> exists(T entity) {
+        Objects.requireNonNull(entity, "Entity must not be null");
+
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
         String where = buildWhereClause(pkNames, ckNames);
@@ -165,27 +218,35 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public Uni<T> save(T entity) {
+        Objects.requireNonNull(entity, "Entity must not be null");
+
         Map<String, Object> properties = mapper.toProperties(entity);
 
         String columns = String.join(", ", properties.keySet());
-        String placeholders = properties.keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
+        String placeholders = properties.keySet().stream()
+                .map(k -> "?")
+                .collect(Collectors.joining(", "));
         String cql = String.format("INSERT INTO %s (%s) VALUES (%s)", tableName, columns, placeholders);
 
         return executeUpdate(cql, properties.values().toArray())
-                .replaceWith(findByKeys(buildKeyParams(entity)));
+                .flatMap(v -> findByKeys(buildKeyParams(entity)));
     }
 
     public Uni<T> update(T entity) {
+        Objects.requireNonNull(entity, "Entity must not be null");
+
         Map<String, Object> properties = mapper.toProperties(entity);
 
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
 
-        // remove key columns from SET clause
-        for (String k : pkNames)
+        // Remove key columns from SET clause
+        for (String k : pkNames) {
             properties.remove(k);
-        for (String k : ckNames)
+        }
+        for (String k : ckNames) {
             properties.remove(k);
+        }
 
         if (properties.isEmpty()) {
             return findByKeys(buildKeyParams(entity));
@@ -200,9 +261,10 @@ public abstract class ReactiveRepository<T, ID> {
 
         Object[] values = properties.values().toArray();
         Object[] keys = buildKeyParams(entity);
-        Object[] params = concat(values, keys);
+        Object[] params = concatArrays(values, keys);
 
-        return executeUpdate(cql, params).replaceWith(findByKeys(keys));
+        return executeUpdate(cql, params)
+                .flatMap(v -> findByKeys(keys));
     }
 
     public Uni<T> merge(T entity) {
@@ -210,15 +272,23 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public Uni<Void> deleteById(ID id) {
+        if (id == null) {
+            return Uni.createFrom().failure(new IllegalArgumentException("ID must not be null"));
+        }
+
         String[] pkNames = mapper.getPartitionKeyNames();
         if (pkNames.length != 1) {
-            return Uni.createFrom().failure(new IllegalStateException("deleteById requires exactly one partition key."));
+            return Uni.createFrom().failure(
+                    new IllegalStateException("deleteById requires exactly one partition key, found " + pkNames.length));
         }
+
         String cql = String.format("DELETE FROM %s WHERE %s = ?", tableName, pkNames[0]);
         return executeUpdate(cql, id);
     }
 
     public Uni<Void> delete(T entity) {
+        Objects.requireNonNull(entity, "Entity must not be null");
+
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
         String where = buildWhereClause(pkNames, ckNames);
@@ -229,14 +299,11 @@ public abstract class ReactiveRepository<T, ID> {
     public Uni<T> findByKeys(Object... keys) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
 
         int expected = pkNames.length + ckNames.length;
-        if (keys.length != expected) {
-            return Uni.createFrom().failure(new IllegalArgumentException(
-                    "Expected " + expected + " key parts, got " + keys.length));
-        }
+        validateKeyCount(keys, expected);
 
+        String where = buildWhereClause(pkNames, ckNames);
         String cql = String.format("SELECT * FROM %s WHERE %s", tableName, where);
         return executeQueryForOne(cql, keys);
     }
@@ -246,18 +313,23 @@ public abstract class ReactiveRepository<T, ID> {
     // ----------------------------------------------------------
 
     public Multi<T> query(String cql, Object... params) {
+        Objects.requireNonNull(cql, "CQL must not be null");
         return executeQueryForList(cql, params);
     }
 
     public Uni<T> querySingle(String cql, Object... params) {
+        Objects.requireNonNull(cql, "CQL must not be null");
         return executeQueryForOne(cql, params);
     }
 
     public Uni<Void> execute(String cql, Object... params) {
+        Objects.requireNonNull(cql, "CQL must not be null");
         return executeUpdate(cql, params);
     }
 
     public <R> Uni<R> queryScalar(String cql, Function<Row, R> mapperFn, Object... params) {
+        Objects.requireNonNull(cql, "CQL must not be null");
+        Objects.requireNonNull(mapperFn, "Mapper function must not be null");
         return runScalarQuery(cql, mapperFn, params);
     }
 
@@ -280,7 +352,7 @@ public abstract class ReactiveRepository<T, ID> {
                 .onItem().transformToMultiAndConcatenate(
                         rs -> Multi.createFrom()
                                 .iterable(() -> rs.currentPage().iterator())
-                                .onItem().transform(row -> {
+                                .map(row -> {
                                     try {
                                         return mapper.map(row);
                                     } catch (Exception e) {
@@ -305,40 +377,89 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object... params) {
-        CompletionStage<PreparedStatement> preparedFuture = preparedStatements.containsKey(cql)
-                ? CompletableFuture.completedFuture(preparedStatements.get(cql))
-                : session.prepareAsync(cql).toCompletableFuture().thenApply(ps -> {
-                    preparedStatements.put(cql, ps);
-                    return ps;
-                });
+        return getPreparedStatement(cql)
+                .thenCompose(ps -> bindAndExecute(ps, params));
+    }
 
-        return preparedFuture.thenCompose(ps -> {
-            BoundStatement bound;
-            if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
-                BoundStatementBuilder builder = ps.boundStatementBuilder();
-                map.forEach((k, v) -> {
-                    if (v != null) {
-                        builder.set(k.toString(), v, (Class<Object>) v.getClass());
-                    } else {
-                        builder.setToNull(k.toString());
+    private CompletionStage<PreparedStatement> getPreparedStatement(String cql) {
+        // Check cache first
+        PreparedStatement cached = preparedStatements.get(cql);
+        if (cached != null) {
+            return CompletableFuture.completedFuture(cached);
+        }
+
+        // Prepare and cache
+        return session.prepareAsync(cql)
+                .toCompletableFuture()
+                .thenApply(ps -> {
+                    // Evict oldest entry if cache is full
+                    if (preparedStatements.size() >= MAX_PREPARED_STATEMENTS) {
+                        Iterator<String> it = preparedStatements.keySet().iterator();
+                        if (it.hasNext()) {
+                            it.next();
+                            it.remove();
+                        }
                     }
+                    preparedStatements.putIfAbsent(cql, ps);
+                    return preparedStatements.get(cql); // Return actual cached value in case of race
                 });
-                bound = builder.build();
+    }
+
+    private CompletionStage<AsyncResultSet> bindAndExecute(PreparedStatement ps, Object... params) {
+        BoundStatement bound;
+
+        if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
+            bound = bindWithMap(ps, map);
+        } else {
+            bound = ps.bind(params);
+        }
+
+        return session.executeAsync(bound).toCompletableFuture();
+    }
+
+    @SuppressWarnings("unchecked")
+    private BoundStatement bindWithMap(PreparedStatement ps, Map<?, ?> map) {
+        BoundStatementBuilder builder = ps.boundStatementBuilder();
+
+        map.forEach((k, v) -> {
+            String key = k.toString();
+            if (v != null) {
+                try {
+                    builder.set(key, v, (Class<Object>) v.getClass());
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException(
+                            "Failed to bind parameter '" + key + "' with value of type " + v.getClass(), e);
+                }
             } else {
-                bound = ps.bind(params);
+                builder.setToNull(key);
             }
-            return session.executeAsync(bound).toCompletableFuture();
         });
+
+        return builder.build();
     }
 
     public EntityMapper<T> getEntityMapper() {
         return mapper;
     }
 
-    private Object[] concat(Object[] left, Object[] right) {
-        Object[] out = new Object[left.length + right.length];
-        System.arraycopy(left, 0, out, 0, left.length);
-        System.arraycopy(right, 0, out, left.length, right.length);
-        return out;
+    /**
+     * Clears the prepared statement cache. Useful for testing or memory management.
+     */
+    public void clearPreparedStatementCache() {
+        preparedStatements.clear();
+    }
+
+    /**
+     * Returns the number of cached prepared statements.
+     */
+    public int getPreparedStatementCacheSize() {
+        return preparedStatements.size();
+    }
+
+    private Object[] concatArrays(Object[] left, Object[] right) {
+        Object[] result = new Object[left.length + right.length];
+        System.arraycopy(left, 0, result, 0, left.length);
+        System.arraycopy(right, 0, result, left.length, right.length);
+        return result;
     }
 }

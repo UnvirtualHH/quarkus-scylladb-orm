@@ -7,6 +7,7 @@ import java.util.regex.Pattern;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.*;
 import javax.lang.model.type.MirroredTypeException;
+import javax.lang.model.type.TypeKind;
 import javax.lang.model.util.ElementFilter;
 
 import com.palantir.javapoet.*;
@@ -22,44 +23,89 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
  */
 final class QueryMethodFactory {
 
+    // Regex patterns (compiled once for efficiency)
     private static final Pattern PARAM_PATTERN = Pattern.compile(":([A-Za-z_][A-Za-z0-9_]*)");
     private static final Pattern COLUMN_PATTERN = Pattern.compile("(\\w+)\\s*(=|<|>|<=|>=|IN)\\s*\\?");
+    private static final Pattern LIMIT_ONE_PATTERN = Pattern.compile("\\bLIMIT\\s+1\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELECT_PATTERN = Pattern.compile("^\\s*SELECT\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern WRITE_PATTERN = Pattern.compile("\\b(INSERT|UPDATE|DELETE|TRUNCATE)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SCHEMA_PATTERN = Pattern.compile("\\b(CREATE|ALTER|DROP)\\b", Pattern.CASE_INSENSITIVE);
 
+    // Structural parameters that should be interpolated, not bound
     private static final Set<String> STRUCTURAL_PARAMS = Set.of("limit", "order", "orderby", "sort", "offset");
+
+    // Mutiny class names as constants
+    private static final ClassName MUTINY_UNI = ClassName.get("io.smallrye.mutiny", "Uni");
+    private static final ClassName MUTINY_MULTI = ClassName.get("io.smallrye.mutiny", "Multi");
+
+    // Allowed values for structural parameters (SQL injection prevention)
+    private static final Pattern SAFE_ORDER_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*\\s+(ASC|DESC)$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SAFE_COLUMN_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*(,\\s*[A-Za-z_][A-Za-z0-9_]*)*$");
+    private static final Pattern SAFE_INTEGER_PATTERN = Pattern.compile("^\\d+$");
 
     private QueryMethodFactory() {
     }
 
     static List<MethodSpec> buildQueryMethods(TypeElement entityType, boolean reactive, ProcessingEnvironment env) {
+        Objects.requireNonNull(entityType, "Entity type must not be null");
+        Objects.requireNonNull(env, "ProcessingEnvironment must not be null");
+
         List<MethodSpec> methods = new ArrayList<>();
         Queries queriesAnnotation = entityType.getAnnotation(Queries.class);
-        if (queriesAnnotation == null)
+        if (queriesAnnotation == null) {
             return methods;
+        }
 
         for (Query q : queriesAnnotation.value()) {
-            methods.add(buildMethodForQuery(entityType, q, reactive, env));
+            if (q == null) {
+                continue;
+            }
+            try {
+                methods.add(buildMethodForQuery(entityType, q, reactive, env));
+            } catch (Exception e) {
+                // Log error but continue processing other queries
+                env.getMessager().printMessage(
+                        javax.tools.Diagnostic.Kind.ERROR,
+                        "Failed to generate query method for @Query: " + e.getMessage(),
+                        entityType);
+            }
         }
         return methods;
     }
 
     private static MethodSpec buildMethodForQuery(TypeElement entityType, Query q, boolean reactive,
-            ProcessingEnvironment env) {
+                                                  ProcessingEnvironment env) {
 
         String methodName = q.name();
         String cql = q.cql();
         ReturnType returnType = q.returnType();
 
-        if (returnType == ReturnType.LIST && cql.toUpperCase(Locale.ROOT).matches(".*\\bLIMIT\\s+1\\b.*")) {
+        // Validate inputs
+        if (methodName == null || methodName.isBlank()) {
+            throw new IllegalArgumentException("Query method name must not be blank");
+        }
+        if (cql == null || cql.isBlank()) {
+            throw new IllegalArgumentException("Query CQL must not be blank for method: " + methodName);
+        }
+
+        // Auto-detect SINGLE return type for LIMIT 1 queries
+        if (returnType == ReturnType.LIST && LIMIT_ONE_PATTERN.matcher(cql).find()) {
             returnType = ReturnType.SINGLE;
         }
 
-        // Extract params
+        // Extract and classify parameters
         List<String> paramNames = extractParamNames(cql);
         List<String> structuralParams = new ArrayList<>();
+        String processedCql = cql;
+
+        // Replace structural params with placeholders and validate them
         for (String p : paramNames) {
             if (isStructuralParam(p)) {
                 structuralParams.add(p);
-                cql = cql.replace(":" + p, "%s");
+                // Use indexed placeholders for better control
+                processedCql = processedCql.replace(":" + p, "%s");
             }
         }
 
@@ -75,22 +121,27 @@ final class QueryMethodFactory {
             mb.addParameter(type, p);
         }
 
-        // Build query string (handle structural params with String.format)
+        // Build query string with validation for structural params
         if (!structuralParams.isEmpty()) {
+            // Add validation for structural parameters
+            for (String sp : structuralParams) {
+                addStructuralParamValidation(mb, sp);
+            }
+
             mb.addStatement("String query = String.format($S, $L)",
-                    cql,
+                    processedCql,
                     String.join(", ", structuralParams));
         } else {
-            mb.addStatement("String query = $S", cql);
+            mb.addStatement("String query = $S", processedCql);
         }
 
         // Build params map only for bindable params
-        boolean useMap = bindableParams.size() > 1;
+        boolean useMap = !bindableParams.isEmpty();
         if (!bindableParams.isEmpty()) {
-            mb.addStatement("$T<String,Object> params = new $T<>()", Map.class, HashMap.class);
+            mb.addStatement("$T<String, Object> params = new $T<>()", Map.class, HashMap.class);
             for (String p : bindableParams) {
                 VariableElement field = findFieldByName(entityType, p);
-                if (field != null && hasEnumeratedAnnotation(field)) {
+                if (field != null && isEnumField(field) && hasEnumeratedAnnotation(field)) {
                     mb.addStatement("params.put($S, $L != null ? $L.name() : null)", p, p, p);
                 } else {
                     mb.addStatement("params.put($S, $L)", p, p);
@@ -103,12 +154,15 @@ final class QueryMethodFactory {
         boolean isWrite = isWrite(cql);
         boolean isConditional = isConditional(cql);
         boolean isSchema = isSchema(cql);
+        boolean isReturning = isReturning(cql);
 
-        // Generate method body
+        // Generate method body based on query type
         if (isSelect) {
             generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
-        } else if (isConditional) {
+        } else if (isConditional && !isReturning) {
             generateConditionalMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
+        } else if (isReturning) {
+            generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
         } else if (isWrite || isSchema) {
             generateExecuteMethodBody(mb, reactive, returnType, bindableParams, useMap);
         } else {
@@ -116,6 +170,38 @@ final class QueryMethodFactory {
         }
 
         return mb.build();
+    }
+
+    // --------------------------------------------------
+    // Validation for SQL Injection Prevention
+    // --------------------------------------------------
+
+    private static void addStructuralParamValidation(MethodSpec.Builder mb, String paramName) {
+        String paramLower = paramName.toLowerCase(Locale.ROOT);
+
+        if (paramLower.equals("order") || paramLower.equals("orderby") || paramLower.equals("sort")) {
+            // Validate ORDER BY clause format: "column ASC" or "column DESC"
+            mb.beginControlFlow("if ($L != null && !$L.matches($S))", paramName, paramName,
+                    SAFE_ORDER_PATTERN.pattern());
+            mb.addStatement(
+                    "throw new $T($S + $L)",
+                    IllegalArgumentException.class,
+                    "Invalid order parameter format (expected 'column ASC/DESC'): ",
+                    paramName);
+            mb.endControlFlow();
+        } else if (paramLower.equals("limit") || paramLower.equals("offset")) {
+            // Validate numeric values
+            mb.beginControlFlow("if ($L != null)", paramName);
+            mb.addStatement("String $LStr = String.valueOf($L)", paramName, paramName);
+            mb.beginControlFlow("if (!$LStr.matches($S))", paramName, SAFE_INTEGER_PATTERN.pattern());
+            mb.addStatement(
+                    "throw new $T($S + $LStr)",
+                    IllegalArgumentException.class,
+                    "Invalid numeric parameter: ",
+                    paramName);
+            mb.endControlFlow();
+            mb.endControlFlow();
+        }
     }
 
     // --------------------------------------------------
@@ -127,19 +213,24 @@ final class QueryMethodFactory {
     }
 
     private static boolean isSelect(String cql) {
-        return cql.trim().toUpperCase(Locale.ROOT).startsWith("SELECT");
+        return SELECT_PATTERN.matcher(cql.trim()).find();
     }
 
     private static boolean isWrite(String cql) {
-        return cql.toUpperCase(Locale.ROOT).matches(".*\\b(INSERT|UPDATE|DELETE|TRUNCATE)\\b.*");
+        return WRITE_PATTERN.matcher(cql).find();
     }
 
     private static boolean isConditional(String cql) {
-        return cql.toUpperCase(Locale.ROOT).matches(".*\\bIF\\s+(EXISTS|NOT\\s+EXISTS|.*=.*)\\b.*");
+        String upper = cql.toUpperCase(Locale.ROOT);
+        return upper.contains(" IF ") && !upper.contains(" RETURNING ");
+    }
+
+    private static boolean isReturning(String cql) {
+        return cql.toUpperCase(Locale.ROOT).contains(" RETURNING ");
     }
 
     private static boolean isSchema(String cql) {
-        return cql.toUpperCase(Locale.ROOT).matches(".*\\b(CREATE|ALTER|DROP)\\b.*");
+        return SCHEMA_PATTERN.matcher(cql).find();
     }
 
     // --------------------------------------------------
@@ -147,82 +238,108 @@ final class QueryMethodFactory {
     // --------------------------------------------------
 
     private static void generateSelectMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
-            ReturnType returnType, List<String> paramNames, boolean useMap) {
+                                                 ReturnType returnType, List<String> paramNames, boolean useMap) {
         switch (returnType) {
             case LIST -> {
-                if (reactive)
-                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Multi"),
-                            TypeName.get(entityType.asType())));
-                else
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_MULTI, TypeName.get(entityType.asType())));
+                } else {
                     mb.returns(ParameterizedTypeName.get(ClassName.get(List.class),
                             TypeName.get(entityType.asType())));
+                }
                 addCall(mb, "query", paramNames, useMap, true);
             }
             case SINGLE -> {
-                if (reactive)
-                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
-                            TypeName.get(entityType.asType())));
-                else
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_UNI, TypeName.get(entityType.asType())));
+                } else {
                     mb.returns(TypeName.get(entityType.asType()));
+                }
                 addCall(mb, "querySingle", paramNames, useMap, true);
             }
             case SCALAR -> {
-                if (reactive)
-                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
-                            ClassName.get(Long.class)));
-                else
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Long.class)));
+                } else {
                     mb.returns(ClassName.get(Long.class));
+                }
                 addCall(mb, "queryScalar", paramNames, useMap, true);
             }
             case VOID -> {
-                if (reactive)
-                    mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
-                            ClassName.get(Void.class)));
-                else
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Void.class)));
+                } else {
                     mb.returns(TypeName.VOID);
+                }
                 addCall(mb, "execute", paramNames, useMap, reactive);
             }
         }
     }
 
-    private static void generateConditionalMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
-            ReturnType returnType, List<String> paramNames, boolean useMap) {
-        if (reactive)
-            mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
-                    TypeName.get(entityType.asType())));
-        else
-            mb.returns(TypeName.get(entityType.asType()));
-        addCall(mb, "querySingle", paramNames, useMap, true);
+    private static void generateConditionalMethodBody(
+            MethodSpec.Builder mb,
+            TypeElement entityType,
+            boolean reactive,
+            ReturnType returnType,
+            List<String> paramNames,
+            boolean useMap) {
+        switch (returnType) {
+            case VOID -> {
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Void.class)));
+                } else {
+                    mb.returns(TypeName.VOID);
+                }
+                addCall(mb, "execute", paramNames, useMap, reactive);
+            }
+            case SCALAR -> {
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Long.class)));
+                } else {
+                    mb.returns(ClassName.get(Long.class));
+                }
+                addCall(mb, "queryScalar", paramNames, useMap, true);
+            }
+            case LIST, SINGLE -> {
+                if (reactive) {
+                    mb.returns(ParameterizedTypeName.get(MUTINY_UNI, TypeName.get(entityType.asType())));
+                } else {
+                    mb.returns(TypeName.get(entityType.asType()));
+                }
+                addCall(mb, "querySingle", paramNames, useMap, true);
+            }
+        }
     }
 
     private static void generateExecuteMethodBody(MethodSpec.Builder mb, boolean reactive, ReturnType returnType,
-            List<String> paramNames, boolean useMap) {
+                                                  List<String> paramNames, boolean useMap) {
         if (returnType == ReturnType.SCALAR) {
-            if (reactive)
-                mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
-                        ClassName.get(Long.class)));
-            else
+            if (reactive) {
+                mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Long.class)));
+            } else {
                 mb.returns(ClassName.get(Long.class));
+            }
             addCall(mb, "queryScalar", paramNames, useMap, true);
             return;
         }
-        if (reactive)
-            mb.returns(ParameterizedTypeName.get(ClassName.get("io.smallrye.mutiny", "Uni"),
-                    ClassName.get(Void.class)));
-        else
+        if (reactive) {
+            mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Void.class)));
+        } else {
             mb.returns(TypeName.VOID);
+        }
         addCall(mb, "execute", paramNames, useMap, reactive);
     }
 
     private static void addCall(MethodSpec.Builder mb, String methodName, List<String> paramNames,
-            boolean useMap, boolean hasReturn) {
+                                boolean useMap, boolean hasReturn) {
         String prefix = hasReturn ? "return " : "";
-        if (paramNames.isEmpty())
+        if (paramNames.isEmpty()) {
             mb.addStatement(prefix + "$L(query)", methodName);
-        else if (useMap)
+        } else if (useMap) {
             mb.addStatement(prefix + "$L(query, params)", methodName);
-        else
+        } else {
             mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramNames));
+        }
     }
 
     // --------------------------------------------------
@@ -232,10 +349,15 @@ final class QueryMethodFactory {
     private static List<String> extractParamNames(String cql) {
         List<String> params = new ArrayList<>();
         Matcher matcher = PARAM_PATTERN.matcher(cql);
-        while (matcher.find())
+        while (matcher.find()) {
             params.add(matcher.group(1));
-        if (params.isEmpty() && cql.contains("?"))
+        }
+
+        // Fallback to positional parameter guessing if named params not found
+        if (params.isEmpty() && cql.contains("?")) {
             params.addAll(guessParamNamesFromCql(cql));
+        }
+
         return params;
     }
 
@@ -243,15 +365,19 @@ final class QueryMethodFactory {
         List<String> guessed = new ArrayList<>();
         String upper = cql.toUpperCase(Locale.ROOT);
 
+        // Try to extract column names from WHERE clauses
         Matcher m = COLUMN_PATTERN.matcher(cql);
         while (m.find()) {
             guessed.add(toCamelCase(m.group(1)));
         }
 
+        // Count total ? placeholders
         int questionCount = (int) cql.chars().filter(ch -> ch == '?').count();
+
+        // Fill remaining params with generic names
         while (guessed.size() < questionCount) {
-            if (guessed.size() == questionCount - 1 && upper.contains("LIMIT ?")) {
-                guessed.add("max");
+            if (guessed.size() == questionCount - 1 && upper.matches(".*\\bLIMIT\\s+\\?.*")) {
+                guessed.add("limit");
             } else {
                 guessed.add("param" + (guessed.size() + 1));
             }
@@ -260,8 +386,12 @@ final class QueryMethodFactory {
     }
 
     private static String toCamelCase(String column) {
+        if (column == null || column.isEmpty()) {
+            return column;
+        }
+
         String[] parts = column.split("_");
-        StringBuilder sb = new StringBuilder(parts[0]);
+        StringBuilder sb = new StringBuilder(parts[0].toLowerCase(Locale.ROOT));
         for (int i = 1; i < parts.length; i++) {
             if (!parts[i].isEmpty()) {
                 sb.append(parts[i].substring(0, 1).toUpperCase(Locale.ROOT))
@@ -272,6 +402,7 @@ final class QueryMethodFactory {
     }
 
     private static TypeName resolveParamType(TypeElement entityType, String paramName, Query q, ProcessingEnvironment env) {
+        // Check explicit param types first
         for (Query.Param p : q.paramTypes()) {
             if (p.name().equals(paramName)) {
                 try {
@@ -281,13 +412,23 @@ final class QueryMethodFactory {
                 }
             }
         }
-        if (paramName.equalsIgnoreCase("limit"))
+
+        // Special handling for common structural params
+        String paramLower = paramName.toLowerCase(Locale.ROOT);
+        if (paramLower.equals("limit") || paramLower.equals("offset")) {
             return ClassName.get(Integer.class);
-        String pLower = paramName.toLowerCase(Locale.ROOT);
-        for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
-            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(pLower))
-                return TypeName.get(field.asType());
         }
+        if (paramLower.equals("order") || paramLower.equals("orderby") || paramLower.equals("sort")) {
+            return ClassName.get(String.class);
+        }
+
+        // Try to match with entity field (case-sensitive)
+        VariableElement field = findFieldByName(entityType, paramName);
+        if (field != null) {
+            return TypeName.get(field.asType());
+        }
+
+        // Fallback to Object
         return ClassName.get(Object.class);
     }
 
@@ -296,12 +437,27 @@ final class QueryMethodFactory {
     // --------------------------------------------------
 
     private static VariableElement findFieldByName(TypeElement entityType, String name) {
+        // First try exact match (case-sensitive)
         for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
-            if (field.getSimpleName().toString().equalsIgnoreCase(name)) {
+            if (field.getSimpleName().toString().equals(name)) {
                 return field;
             }
         }
+
+        // Fallback to case-insensitive match
+        String nameLower = name.toLowerCase(Locale.ROOT);
+        for (VariableElement field : ElementFilter.fieldsIn(entityType.getEnclosedElements())) {
+            if (field.getSimpleName().toString().toLowerCase(Locale.ROOT).equals(nameLower)) {
+                return field;
+            }
+        }
+
         return null;
+    }
+
+    private static boolean isEnumField(VariableElement field) {
+        return field.asType().getKind() == TypeKind.DECLARED
+                && field.asType().toString().contains("Enum");
     }
 
     private static boolean hasEnumeratedAnnotation(VariableElement field) {

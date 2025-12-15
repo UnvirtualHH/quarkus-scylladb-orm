@@ -7,11 +7,14 @@
         <artifactId>quarkiverse-parent</artifactId>
         <version>20</version>
     </parent>
-    <groupId>io.quarkiverse.quarkus-scylladb-orm</groupId>
+    <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
     <artifactId>quarkus-scylladb-orm-parent</artifactId>
     <version>999-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Quarkus ScyllaDB ORM - Parent</name>
+
+    <description>Quarkus extension integrating ScyllaDb ORM</description>
+    <url>https://github.com/UnvirtualHH/quarkus-scylladb-orm</url>
 
     <modules>
         <module>deployment</module>
@@ -19,9 +22,9 @@
     </modules>
 
     <scm>
-        <connection>scm:git:git@github.com:quarkiverse/quarkus-scylladb-orm.git</connection>
-        <developerConnection>scm:git:git@github.com:quarkiverse/quarkus-scylladb-orm.git</developerConnection>
-        <url>https://github.com/quarkiverse/quarkus-neo4j-ogm</url>
+        <connection>scm:git:git@github.com:UnvirtualHH/quarkus-scylladb-orm.git</connection>
+        <developerConnection>scm:git:git@github.com:UnvirtualHH/quarkus-scylladb-orm.git</developerConnection>
+        <url>https://github.com/UnvirtualHH/quarkus-scylladb-orm</url>
     </scm>
 
     <properties>
@@ -29,7 +32,7 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <quarkus.version>3.28.2</quarkus.version>
+        <quarkus.version>3.28.4</quarkus.version>
         <javapoet.version>0.7.0</javapoet.version>
         <cassandra-driver.version>4.19.0</cassandra-driver.version>
     </properties>
