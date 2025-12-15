@@ -563,8 +563,52 @@ public abstract class Repository<T, ID> {
 
     private ResultSet doExecute(String cql, Object... params) {
         PreparedStatement ps = getPreparedStatement(cql);
-        BoundStatement bound = ps.bind(params);
+        BoundStatement bound = bindParameters(ps, params);
         return session.execute(bound);
+    }
+
+    private BoundStatement bindParameters(PreparedStatement ps, Object... params) {
+        // Check if we're using named parameters (Map-based binding)
+        if (params.length == 1 && params[0] instanceof Map<?, ?> map && !isMapValueParameter(ps)) {
+            return bindWithMap(ps, map);
+        } else {
+            return ps.bind(params);
+        }
+    }
+
+    /**
+     * Checks if the prepared statement expects a Map as an actual parameter value,
+     * rather than using Map for named parameter binding.
+     */
+    private boolean isMapValueParameter(PreparedStatement ps) {
+        // If the query has exactly one variable and it's a Map type, then we're passing a Map value
+        if (ps.getVariableDefinitions().size() != 1) {
+            return false;
+        }
+
+        var firstVar = ps.getVariableDefinitions().get(0);
+        return firstVar.getType() instanceof com.datastax.oss.driver.api.core.type.MapType;
+    }
+
+    @SuppressWarnings("unchecked")
+    private BoundStatement bindWithMap(PreparedStatement ps, Map<?, ?> map) {
+        BoundStatementBuilder builder = ps.boundStatementBuilder();
+
+        map.forEach((k, v) -> {
+            String key = k.toString();
+            if (v != null) {
+                try {
+                    builder.set(key, v, (Class<Object>) v.getClass());
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException(
+                            "Failed to bind parameter '" + key + "' with value of type " + v.getClass(), e);
+                }
+            } else {
+                builder.setToNull(key);
+            }
+        });
+
+        return builder.build();
     }
 
     private PreparedStatement getPreparedStatement(String cql) {

@@ -159,6 +159,12 @@ public class MapperGenerator {
                                 setterName(field),
                                 field.getSimpleName())
                         .endControlFlow();
+            } else if (isPrimitive(typeString)) {
+                // Primitives can never be null, set directly
+                builder.addStatement("instance.$L(row.get($S, $T.class))",
+                        setterName(field),
+                        colName,
+                        TypeName.get(field.asType()).box()); // Use boxed type for row.get()
             } else {
                 builder.addStatement("$T $LValue = row.get($S, $T.class)",
                         TypeName.get(field.asType()),

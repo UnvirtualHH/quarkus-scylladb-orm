@@ -6,6 +6,7 @@
         <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
         <artifactId>quarkus-scylladb-orm-parent</artifactId>
         <version>1.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>quarkus-scylladb-orm-deployment</artifactId>
     <name>Quarkus ScyllaDB ORM - Deployment</name>

@@ -408,13 +408,29 @@ public abstract class ReactiveRepository<T, ID> {
     private CompletionStage<AsyncResultSet> bindAndExecute(PreparedStatement ps, Object... params) {
         BoundStatement bound;
 
-        if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
+        // Check if we're using named parameters (Map-based binding)
+        // The query generator passes Map as the first param when using named parameters
+        if (params.length == 1 && params[0] instanceof Map<?, ?> map && !isMapValueParameter(ps)) {
             bound = bindWithMap(ps, map);
         } else {
             bound = ps.bind(params);
         }
 
         return session.executeAsync(bound).toCompletableFuture();
+    }
+
+    /**
+     * Checks if the prepared statement expects a Map as an actual parameter value,
+     * rather than using Map for named parameter binding.
+     */
+    private boolean isMapValueParameter(PreparedStatement ps) {
+        // If the query has exactly one variable and it's a Map type, then we're passing a Map value
+        if (ps.getVariableDefinitions().size() != 1) {
+            return false;
+        }
+
+        var firstVar = ps.getVariableDefinitions().get(0);
+        return firstVar.getType() instanceof com.datastax.oss.driver.api.core.type.MapType;
     }
 
     @SuppressWarnings("unchecked")
