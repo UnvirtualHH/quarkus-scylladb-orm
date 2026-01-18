@@ -25,7 +25,7 @@ public class Book {
     private String title;
 
     @Column("active")
-    private boolean active;
+    private Boolean active;
 
     public UUID getId() {
         return id;
@@ -43,11 +43,11 @@ public class Book {
         this.title = title;
     }
 
-    public boolean isActive() {
+    public Boolean getActive() {
         return active;
     }
 
-    public void setActive(boolean active) {
+    public void setActive(Boolean active) {
         this.active = active;
     }
 }
