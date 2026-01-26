@@ -6,8 +6,10 @@ import java.util.regex.Pattern;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.*;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeKind;
+import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.ElementFilter;
 
 import com.palantir.javapoet.*;
@@ -59,10 +61,26 @@ final class QueryMethodFactory {
             return methods;
         }
 
+        // Track method names to detect duplicates
+        Set<String> seenMethodNames = new HashSet<>();
+
         for (Query q : queriesAnnotation.value()) {
             if (q == null) {
                 continue;
             }
+
+            // Check for duplicate method names
+            String methodName = q.name();
+            if (methodName != null && !methodName.isBlank()) {
+                if (!seenMethodNames.add(methodName)) {
+                    env.getMessager().printMessage(
+                            javax.tools.Diagnostic.Kind.ERROR,
+                            "Duplicate @Query method name: '" + methodName + "'. Each query must have a unique name.",
+                            entityType);
+                    continue;
+                }
+            }
+
             try {
                 methods.add(buildMethodForQuery(entityType, q, reactive, env));
             } catch (Exception e) {
@@ -142,7 +160,7 @@ final class QueryMethodFactory {
             mb.addStatement("$T<String, Object> params = new $T<>()", Map.class, HashMap.class);
             for (String p : bindableParams) {
                 VariableElement field = findFieldByName(entityType, p);
-                if (field != null && isEnumField(field) && hasEnumeratedAnnotation(field)) {
+                if (field != null && isEnumField(field, env) && hasEnumeratedAnnotation(field)) {
                     mb.addStatement("params.put($S, $L != null ? $L.name() : null)", p, p, p);
                 } else {
                     mb.addStatement("params.put($S, $L)", p, p);
@@ -429,7 +447,13 @@ final class QueryMethodFactory {
             return TypeName.get(field.asType());
         }
 
-        // Fallback to Object
+        // Fallback to Object with a warning
+        env.getMessager().printMessage(
+                javax.tools.Diagnostic.Kind.WARNING,
+                "Could not resolve type for parameter '" + paramName + "' in entity " +
+                        entityType.getSimpleName() + ". Using Object type. " +
+                        "Consider adding explicit @Query.Param type annotation.",
+                entityType);
         return ClassName.get(Object.class);
     }
 
@@ -456,9 +480,28 @@ final class QueryMethodFactory {
         return null;
     }
 
-    private static boolean isEnumField(VariableElement field) {
-        return field.asType().getKind() == TypeKind.DECLARED
-                && field.asType().toString().contains("Enum");
+    private static boolean isEnumField(VariableElement field, ProcessingEnvironment env) {
+        TypeMirror fieldType = field.asType();
+        if (fieldType.getKind() != TypeKind.DECLARED) {
+            return false;
+        }
+
+        DeclaredType declaredType = (DeclaredType) fieldType;
+        Element element = declaredType.asElement();
+        if (element.getKind() != ElementKind.ENUM) {
+            return false;
+        }
+
+        // Double-check by verifying it's a subtype of java.lang.Enum
+        TypeElement enumTypeElement = env.getElementUtils().getTypeElement("java.lang.Enum");
+        if (enumTypeElement == null) {
+            // Fallback if Enum type not found (shouldn't happen)
+            return element.getKind() == ElementKind.ENUM;
+        }
+
+        TypeMirror enumType = env.getTypeUtils().erasure(enumTypeElement.asType());
+        TypeMirror erasedFieldType = env.getTypeUtils().erasure(fieldType);
+        return env.getTypeUtils().isSubtype(erasedFieldType, enumType);
     }
 
     private static boolean hasEnumeratedAnnotation(VariableElement field) {

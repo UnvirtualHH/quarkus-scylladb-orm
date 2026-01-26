@@ -9,6 +9,9 @@ import java.util.stream.StreamSupport;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.*;
 
+import io.quarkiverse.quarkus.scylladb.orm.exception.ScyllaMappingException;
+import io.quarkiverse.quarkus.scylladb.orm.exception.ScyllaQueryException;
+import io.quarkiverse.quarkus.scylladb.orm.exception.ScyllaWriteException;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapper;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.KeyComponent;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Pageable;
@@ -96,9 +99,9 @@ public abstract class Repository<T, ID> {
             throw new IllegalStateException("findById requires exactly one partition key column.");
         }
         String cql = String.format("SELECT * FROM %s WHERE %s = ?", tableName, pkNames[0]);
-        ResultSet rs = doExecute(cql, id);
+        ResultSet rs = doExecuteQuery(cql, id);
         Row row = rs.one();
-        return row != null ? mapper.map(row) : null;
+        return row != null ? mapRow(row) : null;
     }
 
     /**
@@ -115,16 +118,16 @@ public abstract class Repository<T, ID> {
         }
 
         String cql = String.format("SELECT * FROM %s WHERE %s", tableName, where);
-        ResultSet rs = doExecute(cql, keys);
+        ResultSet rs = doExecuteQuery(cql, keys);
         Row row = rs.one();
-        return row != null ? mapper.map(row) : null;
+        return row != null ? mapRow(row) : null;
     }
 
     public List<T> findAll() {
         String cql = "SELECT * FROM " + tableName;
-        ResultSet rs = doExecute(cql);
+        ResultSet rs = doExecuteQuery(cql);
         return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapper::map)
+                .map(this::mapRow)
                 .toList();
     }
 
@@ -141,7 +144,7 @@ public abstract class Repository<T, ID> {
 
         ResultSet rs = session.execute(stmt);
         return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapper::map)
+                .map(this::mapRow)
                 .toList();
     }
 
@@ -159,7 +162,7 @@ public abstract class Repository<T, ID> {
         ResultSet rs = session.execute(stmt);
 
         List<T> content = StreamSupport.stream(rs.spliterator(), false)
-                .map(mapper::map)
+                .map(this::mapRow)
                 .toList();
 
         String nextState = rs.getExecutionInfo().getSafePagingState() != null
@@ -171,7 +174,7 @@ public abstract class Repository<T, ID> {
 
     public long count() {
         String cql = "SELECT COUNT(*) as count FROM " + tableName;
-        ResultSet rs = doExecute(cql);
+        ResultSet rs = doExecuteQuery(cql);
         Row row = rs.one();
         return row != null ? row.getLong("count") : 0L;
     }
@@ -187,7 +190,7 @@ public abstract class Repository<T, ID> {
         }
         String cql = String.format("SELECT COUNT(1) as cnt FROM %s WHERE %s = ?",
                 tableName, pkNames[0]);
-        ResultSet rs = doExecute(cql, id);
+        ResultSet rs = doExecuteQuery(cql, id);
         Row row = rs.one();
         return row != null && row.getLong("cnt") > 0;
     }
@@ -197,7 +200,7 @@ public abstract class Repository<T, ID> {
         String[] ckNames = mapper.getClusteringKeyNames();
         String where = buildWhereClause(pkNames, ckNames);
         String cql = String.format("SELECT COUNT(1) AS cnt FROM %s WHERE %s", tableName, where);
-        ResultSet rs = doExecute(cql, buildKeyParams(mapper, entity));
+        ResultSet rs = doExecuteQuery(cql, buildKeyParams(mapper, entity));
         Row row = rs.one();
         return row != null && row.getLong("cnt") > 0;
     }
@@ -209,7 +212,7 @@ public abstract class Repository<T, ID> {
         String placeholders = properties.keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
         String cql = String.format("INSERT INTO %s (%s) VALUES (%s)", tableName, columns, placeholders);
 
-        doExecute(cql, properties.values().toArray());
+        doExecuteWrite(cql, properties.values().toArray());
 
         // Reload by full key
         Object[] keys = buildKeyParams(mapper, entity);
@@ -248,7 +251,7 @@ public abstract class Repository<T, ID> {
         Object[] keys = buildKeyParams(mapper, entity);
         Object[] params = concat(values, keys);
 
-        doExecute(cql, params);
+        doExecuteWrite(cql, params);
 
         return findByKeys(keys);
     }
@@ -263,7 +266,7 @@ public abstract class Repository<T, ID> {
             throw new IllegalStateException("deleteById requires exactly one partition key column.");
         }
         String cql = String.format("DELETE FROM %s WHERE %s = ?", tableName, pkNames[0]);
-        doExecute(cql, id);
+        doExecuteWrite(cql, id);
     }
 
     public void delete(T entity) {
@@ -271,7 +274,7 @@ public abstract class Repository<T, ID> {
         String[] ckNames = mapper.getClusteringKeyNames();
         String where = buildWhereClause(pkNames, ckNames);
         String cql = String.format("DELETE FROM %s WHERE %s", tableName, where);
-        doExecute(cql, buildKeyParams(mapper, entity));
+        doExecuteWrite(cql, buildKeyParams(mapper, entity));
     }
 
     public void deleteByKeys(Object... keys) {
@@ -285,7 +288,7 @@ public abstract class Repository<T, ID> {
         }
 
         String cql = String.format("DELETE FROM %s WHERE %s", tableName, where);
-        doExecute(cql, keys);
+        doExecuteWrite(cql, keys);
     }
 
     // ----------------------------------------------------------
@@ -293,9 +296,9 @@ public abstract class Repository<T, ID> {
     // ----------------------------------------------------------
 
     public List<T> query(String cql, Object... params) {
-        ResultSet rs = doExecute(cql, params);
+        ResultSet rs = doExecuteQuery(cql, params);
         return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapper::map)
+                .map(this::mapRow)
                 .toList();
     }
 
@@ -312,7 +315,7 @@ public abstract class Repository<T, ID> {
 
         ResultSet rs = session.execute(stmt);
         return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapper::map)
+                .map(this::mapRow)
                 .toList();
     }
 
@@ -332,7 +335,7 @@ public abstract class Repository<T, ID> {
         ResultSet rs = session.execute(stmt);
 
         List<T> content = StreamSupport.stream(rs.spliterator(), false)
-                .map(mapper::map)
+                .map(this::mapRow)
                 .toList();
 
         String nextState = rs.getExecutionInfo().getSafePagingState() != null
@@ -343,29 +346,51 @@ public abstract class Repository<T, ID> {
     }
 
     public T querySingle(String cql, Object... params) {
-        ResultSet rs = doExecute(cql, params);
+        ResultSet rs = doExecuteQuery(cql, params);
         Row row = rs.one();
-        return row != null ? mapper.map(row) : null;
+        return row != null ? mapRow(row) : null;
     }
 
     public <R> R queryScalar(String cql, Function<Row, R> mapperFn, Object... params) {
-        ResultSet rs = doExecute(cql, params);
+        ResultSet rs = doExecuteQuery(cql, params);
         Row row = rs.one();
         return row != null ? mapperFn.apply(row) : null;
     }
 
     public void execute(String cql, Object... params) {
-        doExecute(cql, params);
+        doExecuteWrite(cql, params);
     }
 
     // ----------------------------------------------------------
     // Internal
     // ----------------------------------------------------------
 
-    private ResultSet doExecute(String cql, Object... params) {
-        PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
-        BoundStatement bound = ps.bind(params);
-        return session.execute(bound);
+    private ResultSet doExecuteQuery(String cql, Object... params) {
+        try {
+            PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
+            BoundStatement bound = ps.bind(params);
+            return session.execute(bound);
+        } catch (Exception e) {
+            throw new ScyllaQueryException(tableName, cql, params, e);
+        }
+    }
+
+    private ResultSet doExecuteWrite(String cql, Object... params) {
+        try {
+            PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
+            BoundStatement bound = ps.bind(params);
+            return session.execute(bound);
+        } catch (Exception e) {
+            throw new ScyllaWriteException(tableName, cql, params, e);
+        }
+    }
+
+    private T mapRow(Row row) {
+        try {
+            return mapper.map(row);
+        } catch (Exception e) {
+            throw new ScyllaMappingException(tableName, "Failed to map row to entity", e);
+        }
     }
 
     public EntityMapper<T> getEntityMapper() {

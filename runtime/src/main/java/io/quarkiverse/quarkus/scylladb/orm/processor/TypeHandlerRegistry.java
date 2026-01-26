@@ -3,36 +3,46 @@ package io.quarkiverse.quarkus.scylladb.orm.processor;
 import java.util.List;
 import java.util.Optional;
 
-import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 
-import jakarta.enterprise.context.ApplicationScoped;
-
 import io.quarkiverse.quarkus.scylladb.orm.processor.types.ConverterTypeHandler;
 import io.quarkiverse.quarkus.scylladb.orm.processor.types.EnumTypeHandler;
 
-@ApplicationScoped
-public class TypeHandlerRegistry {
+/**
+ * Registry for TypeHandler implementations used during annotation processing.
+ * This class is stateless and thread-safe - all state is passed through method parameters.
+ */
+public final class TypeHandlerRegistry {
 
-    private static final List<TypeHandler> handlers = List.of(
+    private static final List<TypeHandler> HANDLERS = List.of(
             new EnumTypeHandler(),
             new ConverterTypeHandler());
 
-    private static Types types;
-    private static Elements elements;
-
-    public static void init(ProcessingEnvironment env) {
-        types = env.getTypeUtils();
-        elements = env.getElementUtils();
+    private TypeHandlerRegistry() {
+        // Utility class - prevent instantiation
     }
 
+    /**
+     * Finds a handler that supports the given field.
+     *
+     * @param field the field to find a handler for
+     * @param types the Types utility from the processing environment
+     * @param elements the Elements utility from the processing environment
+     * @return an Optional containing the matching handler, or empty if none found
+     */
     public static Optional<TypeHandler> findHandler(VariableElement field, Types types, Elements elements) {
-        return handlers.stream().filter(h -> h.supports(field, types, elements)).findFirst();
+        return HANDLERS.stream().filter(h -> h.supports(field, types, elements)).findFirst();
     }
 
+    /**
+     * Finds a handler that supports the given fully-qualified class name.
+     *
+     * @param fqcn the fully-qualified class name
+     * @return an Optional containing the matching handler, or empty if none found
+     */
     public static Optional<TypeHandler> findHandler(String fqcn) {
-        return handlers.stream().filter(h -> h.supportsType(fqcn)).findFirst();
+        return HANDLERS.stream().filter(h -> h.supportsType(fqcn)).findFirst();
     }
 }

@@ -108,14 +108,18 @@ public abstract class ReactiveRepository<T, ID> {
         String cql = String.format("SELECT * FROM %s %s LIMIT %d",
                 tableName, sortClause, pageable.size());
 
-        BoundStatement bound = session.prepare(cql).bind();
-        if (pageable.pagingState() != null) {
-            bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
-        }
-
-        return Multi.createFrom().completionStage(session.executeAsync(bound).toCompletableFuture())
-                .onItem().transformToMultiAndConcatenate(
-                        rs -> Multi.createFrom().iterable(() -> rs.currentPage().iterator()).map(mapper::map));
+        // Use async prepare to avoid blocking the event loop
+        return Uni.createFrom().completionStage(() -> session.prepareAsync(cql).toCompletableFuture())
+                .chain(ps -> {
+                    BoundStatement bound = ps.bind();
+                    if (pageable.pagingState() != null) {
+                        bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
+                    }
+                    return Uni.createFrom().completionStage(session.executeAsync(bound).toCompletableFuture());
+                })
+                .onItem().transformToMulti(
+                        rs -> Multi.createFrom().iterable(() -> rs.currentPage().iterator()))
+                .map(mapper::map);
     }
 
     public Uni<Paged<T>> findAllPaged(Pageable pageable, Sortable sortable) {
@@ -123,20 +127,28 @@ public abstract class ReactiveRepository<T, ID> {
         String cql = String.format("SELECT * FROM %s %s LIMIT %d",
                 tableName, sortClause, pageable.size());
 
-        BoundStatement bound = session.prepare(cql).bind();
-        if (pageable.pagingState() != null) {
-            bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
-        }
-
-        return Uni.createFrom().completionStage(session.executeAsync(bound).toCompletableFuture())
+        // Use async prepare to avoid blocking the event loop
+        return Uni.createFrom().completionStage(() -> session.prepareAsync(cql).toCompletableFuture())
+                .chain(ps -> {
+                    BoundStatement bound = ps.bind();
+                    if (pageable.pagingState() != null) {
+                        bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
+                    }
+                    return Uni.createFrom().completionStage(session.executeAsync(bound).toCompletableFuture());
+                })
                 .map(rs -> {
                     List<T> content = StreamSupport.stream(rs.currentPage().spliterator(), false)
                             .map(mapper::map)
                             .toList();
 
-                    String nextStateStr = rs.hasMorePages()
-                            ? Objects.requireNonNull(rs.getExecutionInfo().getSafePagingState()).toString()
-                            : null;
+                    // Safely get paging state - may be null even when hasMorePages() is true
+                    String nextStateStr = null;
+                    if (rs.hasMorePages()) {
+                        var pagingState = rs.getExecutionInfo().getSafePagingState();
+                        if (pagingState != null) {
+                            nextStateStr = pagingState.toString();
+                        }
+                    }
 
                     return new Paged<>(content, -1, nextStateStr);
                 });
@@ -305,12 +317,18 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object... params) {
-        CompletionStage<PreparedStatement> preparedFuture = preparedStatements.containsKey(cql)
-                ? CompletableFuture.completedFuture(preparedStatements.get(cql))
-                : session.prepareAsync(cql).toCompletableFuture().thenApply(ps -> {
-                    preparedStatements.put(cql, ps);
-                    return ps;
-                });
+        // Thread-safe caching: check cache first, prepare async if missing
+        PreparedStatement cached = preparedStatements.get(cql);
+        CompletionStage<PreparedStatement> preparedFuture;
+        if (cached != null) {
+            preparedFuture = CompletableFuture.completedFuture(cached);
+        } else {
+            preparedFuture = session.prepareAsync(cql).toCompletableFuture().thenApply(ps -> {
+                // putIfAbsent ensures we don't overwrite if another thread prepared it first
+                PreparedStatement existing = preparedStatements.putIfAbsent(cql, ps);
+                return existing != null ? existing : ps;
+            });
+        }
 
         return preparedFuture.thenCompose(ps -> {
             BoundStatement bound;

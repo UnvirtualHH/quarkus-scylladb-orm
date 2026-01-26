@@ -33,7 +33,7 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <quarkus.version>3.28.4</quarkus.version>
+        <quarkus.version>3.30.6</quarkus.version>
         <javapoet.version>0.7.0</javapoet.version>
         <cassandra-driver.version>4.19.0</cassandra-driver.version>
     </properties>

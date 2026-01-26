@@ -6,7 +6,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import jakarta.enterprise.context.ApplicationScoped;
 
 /**
- * Registry for ReactiveRepositoryRegistry instances.
+ * Registry for blocking Repository instances.
+ * Provides lookup of repositories by entity type at runtime.
  */
 @ApplicationScoped
 public class RepositoryRegistry {

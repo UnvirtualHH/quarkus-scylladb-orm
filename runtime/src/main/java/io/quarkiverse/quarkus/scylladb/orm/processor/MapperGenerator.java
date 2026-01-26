@@ -27,8 +27,6 @@ public class MapperGenerator {
             TypeElement entityType,
             String mapperClassName,
             ProcessingEnvironment processingEnv) {
-        TypeHandlerRegistry.init(processingEnv);
-
         MethodSpec mapMethod = generateMapMethod(entityType, processingEnv);
         MethodSpec toPropertiesMethod = generateToPropertiesMethod(entityType, processingEnv);
         MethodSpec getEntityTypeMethod = generateGetEntityTypeMethod(entityType);
@@ -131,7 +129,7 @@ public class MapperGenerator {
                 .returns(ParameterizedTypeName.get(Map.class, String.class, Object.class))
                 .addParameter(TypeName.get(entityType.asType()), "entity")
                 .addStatement("$T<String,Object> props = new $T<>()",
-                        Map.class, java.util.HashMap.class);
+                        Map.class, java.util.LinkedHashMap.class);
 
         for (VariableElement field : allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
@@ -179,6 +177,7 @@ public class MapperGenerator {
 
     private MethodSpec generateRegisterSelfMethod(TypeElement entityType) {
         return MethodSpec.methodBuilder("registerSelf")
+                .addModifiers(Modifier.PUBLIC)
                 .addAnnotation(ClassName.get("jakarta.annotation", "PostConstruct"))
                 .addStatement("registry.registerSelf($T.class, this)", TypeName.get(entityType.asType()))
                 .build();
