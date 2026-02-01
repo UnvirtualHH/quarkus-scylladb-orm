@@ -135,14 +135,7 @@ public abstract class Repository<T, ID> {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String cql = String.format("SELECT * FROM %s %s LIMIT %d", tableName, sortClause, pageable.size());
 
-        SimpleStatement stmt = SimpleStatement.newInstance(cql)
-                .setPageSize(pageable.size());
-
-        if (pageable.pagingState() != null) {
-            stmt = stmt.setPagingState(PagingState.fromString(pageable.pagingState()));
-        }
-
-        ResultSet rs = session.execute(stmt);
+        ResultSet rs = doExecutePagedQuery(cql, pageable);
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
                 .toList();
@@ -152,22 +145,19 @@ public abstract class Repository<T, ID> {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String cql = String.format("SELECT * FROM %s %s LIMIT %d", tableName, sortClause, pageable.size());
 
-        SimpleStatement stmt = SimpleStatement.newInstance(cql)
-                .setPageSize(pageable.size());
-
-        if (pageable.pagingState() != null) {
-            stmt = stmt.setPagingState(PagingState.fromString(pageable.pagingState()));
-        }
-
-        ResultSet rs = session.execute(stmt);
+        ResultSet rs = doExecutePagedQuery(cql, pageable);
 
         List<T> content = StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
                 .toList();
 
-        String nextState = rs.getExecutionInfo().getSafePagingState() != null
-                ? rs.getExecutionInfo().getSafePagingState().toString()
-                : null;
+        String nextState = null;
+        if (!rs.isFullyFetched()) {
+            var pagingState = rs.getExecutionInfo().getSafePagingState();
+            if (pagingState != null) {
+                nextState = pagingState.toString();
+            }
+        }
 
         return new Paged<>(content, -1, nextState);
     }
@@ -181,6 +171,7 @@ public abstract class Repository<T, ID> {
 
     /**
      * Backward compatible exists via single partition key.
+     * Uses LIMIT 1 instead of COUNT for optimal ScyllaDB performance.
      * For composite keys, use {@link #exists(T)}.
      */
     public boolean existsById(ID id) {
@@ -188,21 +179,24 @@ public abstract class Repository<T, ID> {
         if (pkNames.length != 1) {
             throw new IllegalStateException("existsById requires exactly one partition key column.");
         }
-        String cql = String.format("SELECT COUNT(1) as cnt FROM %s WHERE %s = ?",
-                tableName, pkNames[0]);
+        String cql = String.format("SELECT %s FROM %s WHERE %s = ? LIMIT 1",
+                pkNames[0], tableName, pkNames[0]);
         ResultSet rs = doExecuteQuery(cql, id);
-        Row row = rs.one();
-        return row != null && row.getLong("cnt") > 0;
+        return rs.one() != null;
     }
 
+    /**
+     * Check existence by full primary key (partition + clustering).
+     * Uses LIMIT 1 instead of COUNT for optimal ScyllaDB performance.
+     */
     public boolean exists(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
         String where = buildWhereClause(pkNames, ckNames);
-        String cql = String.format("SELECT COUNT(1) AS cnt FROM %s WHERE %s", tableName, where);
+        String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
+                pkNames[0], tableName, where);
         ResultSet rs = doExecuteQuery(cql, buildKeyParams(mapper, entity));
-        Row row = rs.one();
-        return row != null && row.getLong("cnt") > 0;
+        return rs.one() != null;
     }
 
     public T save(T entity) {
@@ -214,9 +208,7 @@ public abstract class Repository<T, ID> {
 
         doExecuteWrite(cql, properties.values().toArray());
 
-        // Reload by full key
-        Object[] keys = buildKeyParams(mapper, entity);
-        return findByKeys(keys);
+        return entity;
     }
 
     public T merge(T entity) {
@@ -237,7 +229,7 @@ public abstract class Repository<T, ID> {
             properties.remove(k);
 
         if (properties.isEmpty()) {
-            return findByKeys(buildKeyParams(mapper, entity));
+            return entity;
         }
 
         String setClause = properties.keySet().stream()
@@ -253,7 +245,7 @@ public abstract class Repository<T, ID> {
 
         doExecuteWrite(cql, params);
 
-        return findByKeys(keys);
+        return entity;
     }
 
     /**
@@ -306,14 +298,7 @@ public abstract class Repository<T, ID> {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String pagedCql = String.format("%s %s LIMIT %d", cql, sortClause, pageable.size());
 
-        SimpleStatement stmt = SimpleStatement.newInstance(pagedCql, params)
-                .setPageSize(pageable.size());
-
-        if (pageable.pagingState() != null) {
-            stmt = stmt.setPagingState(PagingState.fromString(pageable.pagingState()));
-        }
-
-        ResultSet rs = session.execute(stmt);
+        ResultSet rs = doExecutePagedQuery(pagedCql, pageable, params);
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
                 .toList();
@@ -323,24 +308,19 @@ public abstract class Repository<T, ID> {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String pagedCql = baseCql + " " + sortClause + " LIMIT " + pageable.size();
 
-        SimpleStatement stmt = SimpleStatement.builder(pagedCql)
-                .addPositionalValues(params.values())
-                .setPageSize(pageable.size())
-                .build();
-
-        if (pageable.pagingState() != null) {
-            stmt = stmt.setPagingState(PagingState.fromString(pageable.pagingState()));
-        }
-
-        ResultSet rs = session.execute(stmt);
+        ResultSet rs = doExecutePagedQuery(pagedCql, pageable, params);
 
         List<T> content = StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
                 .toList();
 
-        String nextState = rs.getExecutionInfo().getSafePagingState() != null
-                ? rs.getExecutionInfo().getSafePagingState().toString()
-                : null;
+        String nextState = null;
+        if (!rs.isFullyFetched()) {
+            var pagingState = rs.getExecutionInfo().getSafePagingState();
+            if (pagingState != null) {
+                nextState = pagingState.toString();
+            }
+        }
 
         return new Paged<>(content, -1, nextState);
     }
@@ -365,10 +345,40 @@ public abstract class Repository<T, ID> {
     // Internal
     // ----------------------------------------------------------
 
+    @SuppressWarnings("unchecked")
+    private BoundStatement bindParams(PreparedStatement ps, Object[] params) {
+        if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
+            BoundStatementBuilder builder = ps.boundStatementBuilder();
+            map.forEach((k, v) -> {
+                if (v != null) {
+                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
+                } else {
+                    builder.setToNull(k.toString());
+                }
+            });
+            return builder.build();
+        }
+        return ps.bind(params);
+    }
+
     private ResultSet doExecuteQuery(String cql, Object... params) {
         try {
             PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
-            BoundStatement bound = ps.bind(params);
+            BoundStatement bound = bindParams(ps, params);
+            return session.execute(bound);
+        } catch (Exception e) {
+            throw new ScyllaQueryException(tableName, cql, params, e);
+        }
+    }
+
+    private ResultSet doExecutePagedQuery(String cql, Pageable pageable, Object... params) {
+        try {
+            PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
+            BoundStatement bound = bindParams(ps, params);
+            bound = bound.setPageSize(pageable.size());
+            if (pageable.pagingState() != null) {
+                bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
+            }
             return session.execute(bound);
         } catch (Exception e) {
             throw new ScyllaQueryException(tableName, cql, params, e);
@@ -378,7 +388,7 @@ public abstract class Repository<T, ID> {
     private ResultSet doExecuteWrite(String cql, Object... params) {
         try {
             PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
-            BoundStatement bound = ps.bind(params);
+            BoundStatement bound = bindParams(ps, params);
             return session.execute(bound);
         } catch (Exception e) {
             throw new ScyllaWriteException(tableName, cql, params, e);
