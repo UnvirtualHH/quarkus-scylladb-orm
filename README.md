@@ -280,20 +280,134 @@ List<Person> results = repository.query(
 
 Configure your ScyllaDB connection in `application.properties`:
 
+### Basic Connection
+
 ```properties
-# Contact points
-quarkus.cassandra.contact-points=localhost:9042
+# Contact points (required) - comma-separated host:port pairs
+quarkus.scylla.contact-points=node1:9042,node2:9042,node3:9042
 
-# Authentication (if needed)
-quarkus.cassandra.auth.username=cassandra
-quarkus.cassandra.auth.password=cassandra
+# Local datacenter (required)
+quarkus.scylla.local-datacenter=datacenter1
 
-# Keyspace
-quarkus.cassandra.keyspace=my_keyspace
-
-# Local datacenter
-quarkus.cassandra.local-datacenter=datacenter1
+# Default keyspace (required)
+quarkus.scylla.keyspace=my_keyspace
 ```
+
+### Authentication
+
+```properties
+# Plain text authentication
+quarkus.scylla.auth.username=cassandra
+quarkus.scylla.auth.password=cassandra
+```
+
+### Connection Pool
+
+```properties
+# Connections per local host (default: 1)
+quarkus.scylla.pool.local-size=2
+
+# Connections per remote host (default: 1)
+quarkus.scylla.pool.remote-size=1
+
+# Max requests per connection (default: 1024)
+quarkus.scylla.pool.max-requests-per-connection=1024
+
+# Heartbeat interval to keep connections alive (default: 30s)
+quarkus.scylla.pool.heartbeat-interval=30s
+
+# Connection initialization timeout (default: 5s)
+quarkus.scylla.pool.connection-init-timeout=5s
+```
+
+### Request Settings
+
+```properties
+# Request timeout (default: 2s)
+quarkus.scylla.request.timeout=2s
+
+# Consistency level (default: LOCAL_QUORUM)
+# Options: ANY, ONE, TWO, THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, LOCAL_SERIAL, LOCAL_ONE
+quarkus.scylla.request.consistency=LOCAL_QUORUM
+
+# Serial consistency for LWT (default: SERIAL)
+# Options: SERIAL, LOCAL_SERIAL
+quarkus.scylla.request.serial-consistency=SERIAL
+
+# Default page size for queries (default: 5000)
+quarkus.scylla.request.page-size=5000
+```
+
+### SSL/TLS
+
+```properties
+# Enable SSL/TLS (default: false)
+quarkus.scylla.ssl.enabled=true
+
+# Truststore for server certificate validation
+quarkus.scylla.ssl.truststore-path=/path/to/truststore.jks
+quarkus.scylla.ssl.truststore-password=changeit
+
+# Keystore for client certificate authentication (mutual TLS)
+quarkus.scylla.ssl.keystore-path=/path/to/keystore.p12
+quarkus.scylla.ssl.keystore-password=changeit
+
+# Hostname verification (default: true)
+quarkus.scylla.ssl.hostname-validation=true
+```
+
+### Schema Agreement
+
+```properties
+# Timeout for schema agreement after DDL statements (default: 10s)
+quarkus.scylla.schema.agreement-timeout=10s
+
+# Interval between schema agreement checks (default: 200ms)
+quarkus.scylla.schema.agreement-interval=200ms
+
+# Warn on schema agreement failure (default: true)
+quarkus.scylla.schema.agreement-warn-on-failure=true
+```
+
+### Reconnection Policy
+
+```properties
+# Exponential reconnection base delay (default: 1s)
+quarkus.scylla.reconnection.base-delay=1s
+
+# Exponential reconnection max delay (default: 60s)
+quarkus.scylla.reconnection.max-delay=60s
+```
+
+### Complete Configuration Reference
+
+| Property | Description | Default |
+|----------|-------------|---------|
+| `quarkus.scylla.contact-points` | Comma-separated host:port pairs | *required* |
+| `quarkus.scylla.local-datacenter` | Local datacenter name | *required* |
+| `quarkus.scylla.keyspace` | Default keyspace | *required* |
+| `quarkus.scylla.auth.username` | Authentication username | - |
+| `quarkus.scylla.auth.password` | Authentication password | - |
+| `quarkus.scylla.pool.local-size` | Connections per local host | `1` |
+| `quarkus.scylla.pool.remote-size` | Connections per remote host | `1` |
+| `quarkus.scylla.pool.max-requests-per-connection` | Max concurrent requests per connection | `1024` |
+| `quarkus.scylla.pool.heartbeat-interval` | Connection heartbeat interval | `30s` |
+| `quarkus.scylla.pool.connection-init-timeout` | Connection init timeout | `5s` |
+| `quarkus.scylla.request.timeout` | Request timeout | `2s` |
+| `quarkus.scylla.request.consistency` | Default consistency level | `LOCAL_QUORUM` |
+| `quarkus.scylla.request.serial-consistency` | Serial consistency for LWT | `SERIAL` |
+| `quarkus.scylla.request.page-size` | Default page size | `5000` |
+| `quarkus.scylla.ssl.enabled` | Enable SSL/TLS | `false` |
+| `quarkus.scylla.ssl.truststore-path` | Path to truststore | - |
+| `quarkus.scylla.ssl.truststore-password` | Truststore password | - |
+| `quarkus.scylla.ssl.keystore-path` | Path to keystore (for mTLS) | - |
+| `quarkus.scylla.ssl.keystore-password` | Keystore password | - |
+| `quarkus.scylla.ssl.hostname-validation` | Verify server hostname | `true` |
+| `quarkus.scylla.schema.agreement-timeout` | Schema agreement timeout | `10s` |
+| `quarkus.scylla.schema.agreement-interval` | Schema agreement check interval | `200ms` |
+| `quarkus.scylla.schema.agreement-warn-on-failure` | Warn on agreement failure | `true` |
+| `quarkus.scylla.reconnection.base-delay` | Reconnection base delay | `1s` |
+| `quarkus.scylla.reconnection.max-delay` | Reconnection max delay | `60s` |
 
 ## Type Converters
 
