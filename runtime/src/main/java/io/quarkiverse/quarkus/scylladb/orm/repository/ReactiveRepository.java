@@ -153,7 +153,8 @@ public abstract class ReactiveRepository<T, ID> {
         }
         String cql = String.format("SELECT %s FROM %s WHERE %s = ? LIMIT 1",
                 pkNames[0], tableName, pkNames[0]);
-        return executeQueryForOne(cql, id).map(Objects::nonNull);
+        return runScalarQuery(cql, row -> Boolean.TRUE, id)
+                .map(result -> result != null);
     }
 
     /**
@@ -166,7 +167,8 @@ public abstract class ReactiveRepository<T, ID> {
         String where = buildWhereClause(pkNames, ckNames);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
                 pkNames[0], tableName, where);
-        return executeQueryForOne(cql, buildKeyParams(entity)).map(Objects::nonNull);
+        return runScalarQuery(cql, row -> Boolean.TRUE, buildKeyParams(entity))
+                .map(result -> result != null);
     }
 
     public Uni<T> save(T entity) {
