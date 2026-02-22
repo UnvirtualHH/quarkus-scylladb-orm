@@ -5,11 +5,11 @@
     <parent>
         <groupId>io.quarkiverse</groupId>
         <artifactId>quarkiverse-parent</artifactId>
-        <version>20</version>
+        <version>21</version>
     </parent>
     <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
     <artifactId>quarkus-scylladb-orm-parent</artifactId>
-    <version>1.0.1-SNAPSHOT</version>
+    <version>1.0.3</version>
     <packaging>pom</packaging>
     <name>Quarkus ScyllaDB ORM - Parent</name>
 
@@ -27,6 +27,14 @@
         <url>https://github.com/UnvirtualHH/quarkus-scylladb-orm</url>
       <tag>v1.0.0</tag>
   </scm>
+
+    <developers>
+        <developer>
+            <id>fhell</id>
+            <name>Florian Hell</name>
+            <email>fhell@prgrm.de</email>
+        </developer>
+    </developers>
 
     <properties>
         <compiler-plugin.version>3.14.1</compiler-plugin.version>

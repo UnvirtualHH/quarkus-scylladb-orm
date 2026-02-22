@@ -155,13 +155,35 @@ public class CqlSessionProducer {
     }
 
     private InetSocketAddress parseContactPoint(String contactPoint) {
-        String[] parts = contactPoint.split(":");
-        if (parts.length != 2) {
-            throw new IllegalArgumentException(
-                    "Invalid contact point format: '" + contactPoint + "'. Expected format: 'host:port'");
+        String host;
+        String portStr;
+
+        String trimmed = contactPoint.trim();
+        if (trimmed.startsWith("[")) {
+            // IPv6 bracket notation: [::1]:9042
+            int closeBracket = trimmed.indexOf(']');
+            if (closeBracket < 0) {
+                throw new IllegalArgumentException(
+                        "Invalid contact point: '" + contactPoint + "'. Missing closing bracket for IPv6 address.");
+            }
+            host = trimmed.substring(1, closeBracket);
+            String remainder = trimmed.substring(closeBracket + 1);
+            if (!remainder.startsWith(":")) {
+                throw new IllegalArgumentException(
+                        "Invalid contact point: '" + contactPoint + "'. Expected ':port' after closing bracket.");
+            }
+            portStr = remainder.substring(1);
+        } else {
+            // IPv4 or hostname: host:port
+            int lastColon = trimmed.lastIndexOf(':');
+            if (lastColon < 0) {
+                throw new IllegalArgumentException(
+                        "Invalid contact point format: '" + contactPoint + "'. Expected format: 'host:port' or '[ipv6]:port'");
+            }
+            host = trimmed.substring(0, lastColon);
+            portStr = trimmed.substring(lastColon + 1);
         }
 
-        String host = parts[0].trim();
         if (host.isEmpty()) {
             throw new IllegalArgumentException(
                     "Invalid contact point: '" + contactPoint + "'. Host cannot be empty.");
@@ -169,10 +191,10 @@ public class CqlSessionProducer {
 
         int port;
         try {
-            port = Integer.parseInt(parts[1].trim());
+            port = Integer.parseInt(portStr.trim());
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(
-                    "Invalid contact point: '" + contactPoint + "'. Port must be a number, got: '" + parts[1] + "'");
+                    "Invalid contact point: '" + contactPoint + "'. Port must be a number, got: '" + portStr + "'");
         }
 
         if (port < 1 || port > 65535) {

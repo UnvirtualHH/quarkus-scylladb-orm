@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.Modifier;
@@ -38,6 +39,10 @@ public class MapperGenerator {
         MethodSpec getPkNamesArray = generateGetPartitionKeyNamesArray(entityType, processingEnv);
         MethodSpec getCkNamesArray = generateGetClusteringKeyNamesArray(entityType, processingEnv);
 
+        // Static constant fields for key name arrays
+        FieldSpec pkNamesField = generateKeyNamesConstant("PK_NAMES", partitionKeyFields(entityType, processingEnv));
+        FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES", clusteringKeyFields(entityType, processingEnv));
+
         TypeSpec mapperClass = TypeSpec.classBuilder(mapperClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                 .addAnnotation(ApplicationScoped.class)
@@ -51,6 +56,8 @@ public class MapperGenerator {
                         Modifier.PRIVATE)
                         .addAnnotation(ClassName.get("jakarta.inject", "Inject"))
                         .build())
+                .addField(pkNamesField)
+                .addField(ckNamesField)
                 .addMethod(mapMethod)
                 .addMethod(toPropertiesMethod)
                 .addMethod(getPkNamesArray)
@@ -100,20 +107,21 @@ public class MapperGenerator {
                     || typeString.startsWith("java.util.List")
                     || typeString.startsWith("java.util.Map")) {
 
-                builder.beginControlFlow("if (row.get($S, new $T<$L>() {}) != null)",
+                String varName = field.getSimpleName().toString() + "Val";
+                builder.addStatement("var $L = row.get($S, new $T<$L>() {})",
+                        varName,
                         colName,
                         ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
                         typeString)
-                        .addStatement("instance.$L(row.get($S, new $T<$L>() {}))",
-                                setterName(field),
-                                colName,
-                                ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
-                                typeString)
+                        .beginControlFlow("if ($L != null)", varName)
+                        .addStatement("instance.$L($L)", setterName(field), varName)
                         .endControlFlow();
             } else {
-                builder.beginControlFlow("if (row.get($S, $T.class) != null)", colName, TypeName.get(field.asType()))
-                        .addStatement("instance.$L(row.get($S, $T.class))",
-                                setterName(field), colName, TypeName.get(field.asType()))
+                String varName = field.getSimpleName().toString() + "Val";
+                builder.addStatement("var $L = row.get($S, $T.class)",
+                        varName, colName, TypeName.get(field.asType()))
+                        .beginControlFlow("if ($L != null)", varName)
+                        .addStatement("instance.$L($L)", setterName(field), varName)
                         .endControlFlow();
             }
         }
@@ -203,66 +211,53 @@ public class MapperGenerator {
                         ClassName.get(ArrayList.class),
                         keys.size());
 
-        if (!keys.isEmpty()) {
-            for (KeyField key : keys) {
-                var f = key.field();
-                String colName = resolveColumnName(f);
-                TypeName boxed = TypeName.get(f.asType()).box();
-                b.addStatement("list.add($T.of($S, $T.of($T.class), entity.$L(), $L))",
-                        ClassName.get("io.quarkiverse.quarkus.scylladb.orm.mapping", "KeyComponent"),
-                        colName,
-                        ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
-                        boxed,
-                        getterName(f),
-                        key.ordinal());
-            }
-            b.addStatement("$T.sort(list, $T.comparingInt($T::ordinal))",
-                    ClassName.get(java.util.Collections.class),
-                    ClassName.get(Comparator.class),
-                    ClassName.get("io.quarkiverse.quarkus.scylladb.orm.mapping", "KeyComponent"));
+        // Keys are already sorted by ordinal at compile time via partitionKeyFields/clusteringKeyFields
+        for (KeyField key : keys) {
+            var f = key.field();
+            String colName = resolveColumnName(f);
+            TypeName boxed = TypeName.get(f.asType()).box();
+            b.addStatement("list.add($T.of($S, $T.of($T.class), entity.$L(), $L))",
+                    ClassName.get("io.quarkiverse.quarkus.scylladb.orm.mapping", "KeyComponent"),
+                    colName,
+                    ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
+                    boxed,
+                    getterName(f),
+                    key.ordinal());
         }
 
         b.addStatement("return list");
         return b.build();
     }
 
+    private FieldSpec generateKeyNamesConstant(String fieldName, List<KeyField> keys) {
+        if (keys.isEmpty()) {
+            return FieldSpec.builder(String[].class, fieldName, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                    .initializer("new String[0]")
+                    .build();
+        }
+        String literal = keys.stream()
+                .map(k -> "\"" + resolveColumnName(k.field()) + "\"")
+                .collect(Collectors.joining(", "));
+        return FieldSpec.builder(String[].class, fieldName, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .initializer("{$L}", literal)
+                .build();
+    }
+
     private MethodSpec generateGetPartitionKeyNamesArray(TypeElement entityType, ProcessingEnvironment env) {
-        var pks = partitionKeyFields(entityType, env);
         MethodSpec.Builder b = MethodSpec.methodBuilder("getPartitionKeyNames")
                 .addAnnotation(Override.class)
                 .addModifiers(Modifier.PUBLIC)
-                .returns(String[].class);
-
-        if (pks.isEmpty()) {
-            b.addStatement("return new String[0]");
-        } else {
-            b.addStatement("String[] names = new String[$L]", pks.size());
-            for (int i = 0; i < pks.size(); i++) {
-                var f = pks.get(i).field();
-                b.addStatement("names[$L] = $S", i, resolveColumnName(f));
-            }
-            b.addStatement("return names");
-        }
+                .returns(String[].class)
+                .addStatement("return PK_NAMES.clone()");
         return b.build();
     }
 
     private MethodSpec generateGetClusteringKeyNamesArray(TypeElement entityType, ProcessingEnvironment env) {
-        var cks = clusteringKeyFields(entityType, env);
         MethodSpec.Builder b = MethodSpec.methodBuilder("getClusteringKeyNames")
                 .addAnnotation(Override.class)
                 .addModifiers(Modifier.PUBLIC)
-                .returns(String[].class);
-
-        if (cks.isEmpty()) {
-            b.addStatement("return new String[0]");
-        } else {
-            b.addStatement("String[] names = new String[$L]", cks.size());
-            for (int i = 0; i < cks.size(); i++) {
-                var f = cks.get(i).field();
-                b.addStatement("names[$L] = $S", i, resolveColumnName(f));
-            }
-            b.addStatement("return names");
-        }
+                .returns(String[].class)
+                .addStatement("return CK_NAMES.clone()");
         return b.build();
     }
 
@@ -271,7 +266,11 @@ public class MapperGenerator {
     private static List<VariableElement> allFields(TypeElement type, ProcessingEnvironment env) {
         List<VariableElement> fields = new ArrayList<>();
         while (type != null) {
-            fields.addAll(ElementFilter.fieldsIn(type.getEnclosedElements()));
+            for (VariableElement field : ElementFilter.fieldsIn(type.getEnclosedElements())) {
+                if (!field.getModifiers().contains(Modifier.STATIC)) {
+                    fields.add(field);
+                }
+            }
             var superType = type.getSuperclass();
             if (superType == null || superType.toString().equals("java.lang.Object")) {
                 break;

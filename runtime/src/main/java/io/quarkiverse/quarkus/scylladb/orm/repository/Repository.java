@@ -1,7 +1,6 @@
 package io.quarkiverse.quarkus.scylladb.orm.repository;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -28,8 +27,6 @@ public abstract class Repository<T, ID> {
     protected final String tableName;
     protected final EntityMapper<T> mapper;
     protected final RepositoryRegistry registry;
-
-    private final Map<String, PreparedStatement> preparedStatements = new ConcurrentHashMap<>();
 
     public Repository() {
         this.session = null;
@@ -294,6 +291,27 @@ public abstract class Repository<T, ID> {
                 .toList();
     }
 
+    public List<T> query(String cql, Object p1) {
+        ResultSet rs = doExecuteQuery(cql, p1);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(this::mapRow)
+                .toList();
+    }
+
+    public List<T> query(String cql, Object p1, Object p2) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(this::mapRow)
+                .toList();
+    }
+
+    public List<T> query(String cql, Object p1, Object p2, Object p3) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(this::mapRow)
+                .toList();
+    }
+
     public List<T> query(String cql, Pageable pageable, Sortable sortable, Object... params) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String pagedCql = String.format("%s %s LIMIT %d", cql, sortClause, pageable.size());
@@ -331,14 +349,72 @@ public abstract class Repository<T, ID> {
         return row != null ? mapRow(row) : null;
     }
 
+    public T querySingle(String cql, Object p1) {
+        ResultSet rs = doExecuteQuery(cql, p1);
+        Row row = rs.one();
+        return row != null ? mapRow(row) : null;
+    }
+
+    public T querySingle(String cql, Object p1, Object p2) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2);
+        Row row = rs.one();
+        return row != null ? mapRow(row) : null;
+    }
+
+    public T querySingle(String cql, Object p1, Object p2, Object p3) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
+        Row row = rs.one();
+        return row != null ? mapRow(row) : null;
+    }
+
     public <R> R queryScalar(String cql, Function<Row, R> mapperFn, Object... params) {
         ResultSet rs = doExecuteQuery(cql, params);
         Row row = rs.one();
         return row != null ? mapperFn.apply(row) : null;
     }
 
+    /**
+     * Execute a scalar query and return the first column of the first row as Long.
+     * Used by generated @Query methods with ReturnType.SCALAR.
+     */
+    public Long queryScalar(String cql, Object... params) {
+        ResultSet rs = doExecuteQuery(cql, params);
+        Row row = rs.one();
+        return row != null ? row.getLong(0) : null;
+    }
+
+    public Long queryScalar(String cql, Object p1) {
+        ResultSet rs = doExecuteQuery(cql, p1);
+        Row row = rs.one();
+        return row != null ? row.getLong(0) : null;
+    }
+
+    public Long queryScalar(String cql, Object p1, Object p2) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2);
+        Row row = rs.one();
+        return row != null ? row.getLong(0) : null;
+    }
+
+    public Long queryScalar(String cql, Object p1, Object p2, Object p3) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
+        Row row = rs.one();
+        return row != null ? row.getLong(0) : null;
+    }
+
     public void execute(String cql, Object... params) {
         doExecuteWrite(cql, params);
+    }
+
+    public void execute(String cql, Object p1) {
+        doExecuteWrite(cql, p1);
+    }
+
+    public void execute(String cql, Object p1, Object p2) {
+        doExecuteWrite(cql, p1, p2);
+    }
+
+    public void execute(String cql, Object p1, Object p2, Object p3) {
+        doExecuteWrite(cql, p1, p2, p3);
     }
 
     // ----------------------------------------------------------
@@ -361,9 +437,57 @@ public abstract class Repository<T, ID> {
         return ps.bind(params);
     }
 
+    @SuppressWarnings("unchecked")
+    private BoundStatement bind1(PreparedStatement ps, Object p1) {
+        BoundStatementBuilder builder = ps.boundStatementBuilder();
+        if (p1 != null) {
+            builder.set(0, p1, (Class<Object>) p1.getClass());
+        } else {
+            builder.setToNull(0);
+        }
+        return builder.build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private BoundStatement bind2(PreparedStatement ps, Object p1, Object p2) {
+        BoundStatementBuilder builder = ps.boundStatementBuilder();
+        if (p1 != null) {
+            builder.set(0, p1, (Class<Object>) p1.getClass());
+        } else {
+            builder.setToNull(0);
+        }
+        if (p2 != null) {
+            builder.set(1, p2, (Class<Object>) p2.getClass());
+        } else {
+            builder.setToNull(1);
+        }
+        return builder.build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private BoundStatement bind3(PreparedStatement ps, Object p1, Object p2, Object p3) {
+        BoundStatementBuilder builder = ps.boundStatementBuilder();
+        if (p1 != null) {
+            builder.set(0, p1, (Class<Object>) p1.getClass());
+        } else {
+            builder.setToNull(0);
+        }
+        if (p2 != null) {
+            builder.set(1, p2, (Class<Object>) p2.getClass());
+        } else {
+            builder.setToNull(1);
+        }
+        if (p3 != null) {
+            builder.set(2, p3, (Class<Object>) p3.getClass());
+        } else {
+            builder.setToNull(2);
+        }
+        return builder.build();
+    }
+
     private ResultSet doExecuteQuery(String cql, Object... params) {
         try {
-            PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
+            PreparedStatement ps = session.prepare(cql);
             BoundStatement bound = bindParams(ps, params);
             return session.execute(bound);
         } catch (Exception e) {
@@ -371,9 +495,36 @@ public abstract class Repository<T, ID> {
         }
     }
 
+    private ResultSet doExecuteQuery(String cql, Object p1) {
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            return session.execute(bind1(ps, p1));
+        } catch (Exception e) {
+            throw new ScyllaQueryException(tableName, cql, new Object[] { p1 }, e);
+        }
+    }
+
+    private ResultSet doExecuteQuery(String cql, Object p1, Object p2) {
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            return session.execute(bind2(ps, p1, p2));
+        } catch (Exception e) {
+            throw new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, e);
+        }
+    }
+
+    private ResultSet doExecuteQuery(String cql, Object p1, Object p2, Object p3) {
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            return session.execute(bind3(ps, p1, p2, p3));
+        } catch (Exception e) {
+            throw new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, e);
+        }
+    }
+
     private ResultSet doExecutePagedQuery(String cql, Pageable pageable, Object... params) {
         try {
-            PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
+            PreparedStatement ps = session.prepare(cql);
             BoundStatement bound = bindParams(ps, params);
             bound = bound.setPageSize(pageable.size());
             if (pageable.pagingState() != null) {
@@ -387,11 +538,38 @@ public abstract class Repository<T, ID> {
 
     private ResultSet doExecuteWrite(String cql, Object... params) {
         try {
-            PreparedStatement ps = preparedStatements.computeIfAbsent(cql, session::prepare);
+            PreparedStatement ps = session.prepare(cql);
             BoundStatement bound = bindParams(ps, params);
             return session.execute(bound);
         } catch (Exception e) {
             throw new ScyllaWriteException(tableName, cql, params, e);
+        }
+    }
+
+    private ResultSet doExecuteWrite(String cql, Object p1) {
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            return session.execute(bind1(ps, p1));
+        } catch (Exception e) {
+            throw new ScyllaWriteException(tableName, cql, new Object[] { p1 }, e);
+        }
+    }
+
+    private ResultSet doExecuteWrite(String cql, Object p1, Object p2) {
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            return session.execute(bind2(ps, p1, p2));
+        } catch (Exception e) {
+            throw new ScyllaWriteException(tableName, cql, new Object[] { p1, p2 }, e);
+        }
+    }
+
+    private ResultSet doExecuteWrite(String cql, Object p1, Object p2, Object p3) {
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            return session.execute(bind3(ps, p1, p2, p3));
+        } catch (Exception e) {
+            throw new ScyllaWriteException(tableName, cql, new Object[] { p1, p2, p3 }, e);
         }
     }
 

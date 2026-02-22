@@ -12,6 +12,8 @@ import org.junit.jupiter.api.*;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 
+import io.quarkiverse.quarkus.scylladb.orm.it.model.Author;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.AuthorBaseRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.Book;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.BookBaseRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.util.ScyllaDbTestResource;
@@ -28,6 +30,9 @@ public class QueryTest {
 
     @Inject
     BookBaseRepository bookRepository;
+
+    @Inject
+    AuthorBaseRepository authorRepository;
 
     @BeforeEach
     public void clearDatabase() {
@@ -134,6 +139,32 @@ public class QueryTest {
         assertEquals("Modified", updated.getTitle());
     }
 
+    @Test
+    @Order(9)
+    void testPrefixParamsTwoArgumentsBlocking() {
+        UUID id = UUID.randomUUID();
+        createTestAuthor(id, "Ada");
+
+        Author found = authorRepository.findByIdAndNamePrefix(id, "Ada");
+
+        assertNotNull(found);
+        assertEquals(id, found.getId());
+        assertEquals("Ada", found.getName());
+    }
+
+    @Test
+    @Order(10)
+    void testPrefixParamsThreeArgumentsBlocking() {
+        UUID id = UUID.randomUUID();
+        createTestAuthor(id, "Linus");
+
+        Author found = authorRepository.findByThreeParamsPrefix(id, "Linus", "Linus");
+
+        assertNotNull(found);
+        assertEquals(id, found.getId());
+        assertEquals("Linus", found.getName());
+    }
+
     private UUID createTestBook(String title) {
         UUID bookId = UUID.randomUUID();
 
@@ -145,5 +176,13 @@ public class QueryTest {
                 .build());
 
         return bookId;
+    }
+
+    private void createTestAuthor(UUID id, String name) {
+        session.execute(SimpleStatement.builder(
+                "INSERT INTO author (id, name) VALUES (?, ?)")
+                .addPositionalValue(id)
+                .addPositionalValue(name)
+                .build());
     }
 }

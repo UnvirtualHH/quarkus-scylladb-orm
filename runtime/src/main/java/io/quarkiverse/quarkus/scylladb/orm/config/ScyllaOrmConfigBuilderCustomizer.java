@@ -1,14 +1,14 @@
 package io.quarkiverse.quarkus.scylladb.orm.config;
 
+import io.quarkus.runtime.configuration.ConfigBuilder;
 import io.smallrye.config.SmallRyeConfigBuilder;
-import io.smallrye.config.SmallRyeConfigBuilderCustomizer;
 
 /**
  * Registers the ScyllaOrmConfig mapping with SmallRye Config.
  */
-public class ScyllaOrmConfigBuilderCustomizer implements SmallRyeConfigBuilderCustomizer {
+public class ScyllaOrmConfigBuilderCustomizer implements ConfigBuilder {
     @Override
-    public void configBuilder(SmallRyeConfigBuilder builder) {
-        builder.withMapping(ScyllaOrmConfig.class);
+    public SmallRyeConfigBuilder configBuilder(SmallRyeConfigBuilder builder) {
+        return builder.withMapping(ScyllaOrmConfig.class);
     }
 }

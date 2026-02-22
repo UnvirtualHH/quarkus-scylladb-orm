@@ -140,6 +140,10 @@ final class QueryMethodFactory {
             mb.addParameter(type, p);
         }
 
+        // Replace named params (:name) with positional placeholders (?) in CQL
+        // token-safe to avoid prefix collisions like :id and :id2
+        processedCql = replaceBindableParamsWithPositional(processedCql, bindableParams);
+
         // Build query string with validation for structural params
         if (!structuralParams.isEmpty()) {
             // Add validation for structural parameters
@@ -154,17 +158,13 @@ final class QueryMethodFactory {
             mb.addStatement("String query = $S", processedCql);
         }
 
-        // Build params map only for bindable params
-        boolean useMap = !bindableParams.isEmpty();
-        if (!bindableParams.isEmpty()) {
-            mb.addStatement("$T<String, Object> params = new $T<>()", Map.class, HashMap.class);
-            for (String p : bindableParams) {
-                VariableElement field = findFieldByName(entityType, p);
-                if (field != null && isEnumField(field, env) && hasEnumeratedAnnotation(field)) {
-                    mb.addStatement("params.put($S, $L != null ? $L.name() : null)", p, p, p);
-                } else {
-                    mb.addStatement("params.put($S, $L)", p, p);
-                }
+        List<String> bindableParamExpressions = new ArrayList<>(bindableParams.size());
+        for (String p : bindableParams) {
+            VariableElement field = findFieldByName(entityType, p);
+            if (field != null && isEnumField(field, env) && hasEnumeratedAnnotation(field)) {
+                bindableParamExpressions.add(p + " != null ? " + p + ".name() : null");
+            } else {
+                bindableParamExpressions.add(p);
             }
         }
 
@@ -177,15 +177,15 @@ final class QueryMethodFactory {
 
         // Generate method body based on query type
         if (isSelect) {
-            generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
+            generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParamExpressions);
         } else if (isConditional && !isReturning) {
-            generateConditionalMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
+            generateConditionalMethodBody(mb, entityType, reactive, returnType, bindableParamExpressions);
         } else if (isReturning) {
-            generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParams, useMap);
+            generateSelectMethodBody(mb, entityType, reactive, returnType, bindableParamExpressions);
         } else if (isWrite || isSchema) {
-            generateExecuteMethodBody(mb, reactive, returnType, bindableParams, useMap);
+            generateExecuteMethodBody(mb, reactive, returnType, bindableParamExpressions);
         } else {
-            generateExecuteMethodBody(mb, reactive, returnType, bindableParams, useMap);
+            generateExecuteMethodBody(mb, reactive, returnType, bindableParamExpressions);
         }
 
         return mb.build();
@@ -257,7 +257,7 @@ final class QueryMethodFactory {
     // --------------------------------------------------
 
     private static void generateSelectMethodBody(MethodSpec.Builder mb, TypeElement entityType, boolean reactive,
-            ReturnType returnType, List<String> paramNames, boolean useMap) {
+            ReturnType returnType, List<String> paramExpressions) {
         switch (returnType) {
             case LIST -> {
                 if (reactive) {
@@ -266,7 +266,7 @@ final class QueryMethodFactory {
                     mb.returns(ParameterizedTypeName.get(ClassName.get(List.class),
                             TypeName.get(entityType.asType())));
                 }
-                addCall(mb, "query", paramNames, useMap, true);
+                addCall(mb, "query", paramExpressions, true);
             }
             case SINGLE -> {
                 if (reactive) {
@@ -274,7 +274,7 @@ final class QueryMethodFactory {
                 } else {
                     mb.returns(TypeName.get(entityType.asType()));
                 }
-                addCall(mb, "querySingle", paramNames, useMap, true);
+                addCall(mb, "querySingle", paramExpressions, true);
             }
             case SCALAR -> {
                 if (reactive) {
@@ -282,7 +282,7 @@ final class QueryMethodFactory {
                 } else {
                     mb.returns(ClassName.get(Long.class));
                 }
-                addCall(mb, "queryScalar", paramNames, useMap, true);
+                addCall(mb, "queryScalar", paramExpressions, true);
             }
             case VOID -> {
                 if (reactive) {
@@ -290,7 +290,7 @@ final class QueryMethodFactory {
                 } else {
                     mb.returns(TypeName.VOID);
                 }
-                addCall(mb, "execute", paramNames, useMap, reactive);
+                addCall(mb, "execute", paramExpressions, reactive);
             }
         }
     }
@@ -300,8 +300,7 @@ final class QueryMethodFactory {
             TypeElement entityType,
             boolean reactive,
             ReturnType returnType,
-            List<String> paramNames,
-            boolean useMap) {
+            List<String> paramExpressions) {
         switch (returnType) {
             case VOID -> {
                 if (reactive) {
@@ -309,7 +308,7 @@ final class QueryMethodFactory {
                 } else {
                     mb.returns(TypeName.VOID);
                 }
-                addCall(mb, "execute", paramNames, useMap, reactive);
+                addCall(mb, "execute", paramExpressions, reactive);
             }
             case SCALAR -> {
                 if (reactive) {
@@ -317,7 +316,7 @@ final class QueryMethodFactory {
                 } else {
                     mb.returns(ClassName.get(Long.class));
                 }
-                addCall(mb, "queryScalar", paramNames, useMap, true);
+                addCall(mb, "queryScalar", paramExpressions, true);
             }
             case LIST, SINGLE -> {
                 if (reactive) {
@@ -325,20 +324,20 @@ final class QueryMethodFactory {
                 } else {
                     mb.returns(TypeName.get(entityType.asType()));
                 }
-                addCall(mb, "querySingle", paramNames, useMap, true);
+                addCall(mb, "querySingle", paramExpressions, true);
             }
         }
     }
 
     private static void generateExecuteMethodBody(MethodSpec.Builder mb, boolean reactive, ReturnType returnType,
-            List<String> paramNames, boolean useMap) {
+            List<String> paramExpressions) {
         if (returnType == ReturnType.SCALAR) {
             if (reactive) {
                 mb.returns(ParameterizedTypeName.get(MUTINY_UNI, ClassName.get(Long.class)));
             } else {
                 mb.returns(ClassName.get(Long.class));
             }
-            addCall(mb, "queryScalar", paramNames, useMap, true);
+            addCall(mb, "queryScalar", paramExpressions, true);
             return;
         }
         if (reactive) {
@@ -346,18 +345,15 @@ final class QueryMethodFactory {
         } else {
             mb.returns(TypeName.VOID);
         }
-        addCall(mb, "execute", paramNames, useMap, reactive);
+        addCall(mb, "execute", paramExpressions, reactive);
     }
 
-    private static void addCall(MethodSpec.Builder mb, String methodName, List<String> paramNames,
-            boolean useMap, boolean hasReturn) {
+    private static void addCall(MethodSpec.Builder mb, String methodName, List<String> paramExpressions, boolean hasReturn) {
         String prefix = hasReturn ? "return " : "";
-        if (paramNames.isEmpty()) {
+        if (paramExpressions.isEmpty()) {
             mb.addStatement(prefix + "$L(query)", methodName);
-        } else if (useMap) {
-            mb.addStatement(prefix + "$L(query, params)", methodName);
         } else {
-            mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramNames));
+            mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramExpressions));
         }
     }
 
@@ -455,6 +451,25 @@ final class QueryMethodFactory {
                         "Consider adding explicit @Query.Param type annotation.",
                 entityType);
         return ClassName.get(Object.class);
+    }
+
+    private static String replaceBindableParamsWithPositional(String cql, List<String> bindableParams) {
+        if (bindableParams.isEmpty()) {
+            return cql;
+        }
+        Set<String> bindable = new HashSet<>(bindableParams);
+        Matcher matcher = PARAM_PATTERN.matcher(cql);
+        StringBuilder out = new StringBuilder();
+        while (matcher.find()) {
+            String name = matcher.group(1);
+            if (bindable.contains(name)) {
+                matcher.appendReplacement(out, "?");
+            } else {
+                matcher.appendReplacement(out, Matcher.quoteReplacement(matcher.group(0)));
+            }
+        }
+        matcher.appendTail(out);
+        return out.toString();
     }
 
     // --------------------------------------------------

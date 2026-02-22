@@ -12,6 +12,8 @@ import org.junit.jupiter.api.*;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 
+import io.quarkiverse.quarkus.scylladb.orm.it.model.Author;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.AuthorBaseReactiveRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.Book;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.BookBaseReactiveRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.util.ScyllaDbTestResource;
@@ -30,6 +32,9 @@ public class QueryReactiveTest {
 
     @Inject
     BookBaseReactiveRepository bookRepository;
+
+    @Inject
+    AuthorBaseReactiveRepository authorRepository;
 
     @BeforeEach
     public void clearDatabase() {
@@ -166,6 +171,38 @@ public class QueryReactiveTest {
         assertEquals("Modified", updated.getTitle());
     }
 
+    @Test
+    @Order(9)
+    void testPrefixParamsTwoArgumentsReactive() {
+        UUID id = UUID.randomUUID();
+        createTestAuthor(id, "Ada");
+
+        Author found = authorRepository.findByIdAndNamePrefix(id, "Ada")
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().assertCompleted()
+                .getItem();
+
+        assertNotNull(found);
+        assertEquals(id, found.getId());
+        assertEquals("Ada", found.getName());
+    }
+
+    @Test
+    @Order(10)
+    void testPrefixParamsThreeArgumentsReactive() {
+        UUID id = UUID.randomUUID();
+        createTestAuthor(id, "Linus");
+
+        Author found = authorRepository.findByThreeParamsPrefix(id, "Linus", "Linus")
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().assertCompleted()
+                .getItem();
+
+        assertNotNull(found);
+        assertEquals(id, found.getId());
+        assertEquals("Linus", found.getName());
+    }
+
     private UUID createTestBook(String title) {
         UUID bookId = UUID.randomUUID();
 
@@ -177,5 +214,13 @@ public class QueryReactiveTest {
                 .build());
 
         return bookId;
+    }
+
+    private void createTestAuthor(UUID id, String name) {
+        session.execute(SimpleStatement.builder(
+                "INSERT INTO author (id, name) VALUES (?, ?)")
+                .addPositionalValue(id)
+                .addPositionalValue(name)
+                .build());
     }
 }
