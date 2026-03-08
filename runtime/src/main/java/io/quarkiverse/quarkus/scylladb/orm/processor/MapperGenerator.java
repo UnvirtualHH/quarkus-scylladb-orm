@@ -13,6 +13,7 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.util.ElementFilter;
 import javax.tools.Diagnostic;
 
@@ -103,17 +104,29 @@ public class MapperGenerator {
             }
 
             // --- Special handling for generic collection types ---
+            // Uses typed Row accessors (getList/getSet/getMap) instead of GenericType
+            // to avoid reflection at runtime (required for native image builds)
             if (typeString.startsWith("java.util.Set")
                     || typeString.startsWith("java.util.List")
                     || typeString.startsWith("java.util.Map")) {
 
                 String varName = field.getSimpleName().toString() + "Val";
-                builder.addStatement("var $L = row.get($S, new $T<$L>() {})",
-                        varName,
-                        colName,
-                        ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
-                        typeString)
-                        .beginControlFlow("if ($L != null)", varName)
+                var typeArgs = ((DeclaredType) field.asType()).getTypeArguments();
+
+                if (typeString.startsWith("java.util.List")) {
+                    builder.addStatement("var $L = row.getList($S, $T.class)",
+                            varName, colName, TypeName.get(typeArgs.get(0)));
+                } else if (typeString.startsWith("java.util.Set")) {
+                    builder.addStatement("var $L = row.getSet($S, $T.class)",
+                            varName, colName, TypeName.get(typeArgs.get(0)));
+                } else {
+                    builder.addStatement("var $L = row.getMap($S, $T.class, $T.class)",
+                            varName, colName,
+                            TypeName.get(typeArgs.get(0)),
+                            TypeName.get(typeArgs.get(1)));
+                }
+
+                builder.beginControlFlow("if ($L != null)", varName)
                         .addStatement("instance.$L($L)", setterName(field), varName)
                         .endControlFlow();
             } else {
