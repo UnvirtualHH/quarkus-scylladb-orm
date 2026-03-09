@@ -166,11 +166,6 @@ class ScyllaDBOrmProcessor {
         // runtime, so it must not be instantiated at build time either.
         runtimeInit.produce(new RuntimeInitializedClassBuildItem(
                 CqlSessionProducer.class.getName()));
-
-        // Apache HTTP NTLMEngineImpl is pulled in transitively and creates
-        // InetAddress instances during static initialization.
-        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
-                "org.apache.http.impl.auth.NTLMEngineImpl"));
     }
 
     @BuildStep

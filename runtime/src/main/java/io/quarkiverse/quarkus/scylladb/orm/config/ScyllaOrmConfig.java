@@ -11,17 +11,24 @@ public interface ScyllaOrmConfig {
 
     /**
      * Comma-separated list of contact points (host:port).
+     * Defaults to localhost for local development; override via
+     * QUARKUS_SCYLLA_CONTACT_POINTS env var or application.yaml in production.
      */
+    @WithDefault("127.0.0.1:9042")
     String contactPoints();
 
     /**
      * Local datacenter name.
+     * Defaults to "datacenter1" which is the standard name for single-DC setups.
      */
+    @WithDefault("datacenter1")
     String localDatacenter();
 
     /**
      * Default keyspace.
+     * Must be overridden per service via application.yaml or environment variable.
      */
+    @WithDefault("default")
     String keyspace();
 
     /**
