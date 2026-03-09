@@ -145,6 +145,32 @@ class ScyllaDBOrmProcessor {
                 "io.netty.channel.epoll.Native"));
         runtimeInit.produce(new RuntimeInitializedClassBuildItem(
                 "io.netty.handler.ssl.BouncyCastleAlpnSslUtils"));
+
+        // Cassandra driver classes that create InetSocketAddress / Inet4Address
+        // instances during class initialization. GraalVM for JDK 25 changed the
+        // default initialization policy so that java.net.Inet4Address is no longer
+        // allowed in the image heap at build time. Deferring these classes to
+        // runtime avoids the "An object of type java.net.Inet4Address was found
+        // in the image heap" error during native compilation.
+        // See: https://github.com/datastax/cassandra-quarkus CassandraClientProcessor
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "com.datastax.oss.driver.internal.core.metadata.MetadataManager"));
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "com.datastax.oss.driver.internal.core.metadata.DefaultEndPoint"));
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "com.datastax.oss.driver.api.core.session.SessionBuilder"));
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "com.datastax.oss.driver.internal.core.session.DefaultSession"));
+
+        // CqlSessionProducer parses contact points into InetSocketAddress at
+        // runtime, so it must not be instantiated at build time either.
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                CqlSessionProducer.class.getName()));
+
+        // Apache HTTP NTLMEngineImpl is pulled in transitively and creates
+        // InetAddress instances during static initialization.
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "org.apache.http.impl.auth.NTLMEngineImpl"));
     }
 
     @BuildStep
