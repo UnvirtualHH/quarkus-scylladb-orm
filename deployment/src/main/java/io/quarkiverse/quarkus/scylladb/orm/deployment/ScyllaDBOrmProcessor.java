@@ -17,6 +17,8 @@ import io.quarkus.deployment.builditem.nativeimage.NativeImageResourcePatternsBu
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ServiceProviderBuildItem;
+import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
+import io.quarkus.maven.dependency.ResolvedDependency;
 
 class ScyllaDBOrmProcessor {
 
@@ -134,6 +136,7 @@ class ScyllaDBOrmProcessor {
 
     @BuildStep
     void registerRuntimeInitializedClasses(
+            CurateOutcomeBuildItem curateOutcome,
             BuildProducer<RuntimeInitializedClassBuildItem> runtimeInit) {
         // Netty classes that must be initialized at runtime, not build time.
         // Required for Cassandra driver's Netty-based transport.
@@ -145,6 +148,27 @@ class ScyllaDBOrmProcessor {
                 "io.netty.channel.epoll.Native"));
         runtimeInit.produce(new RuntimeInitializedClassBuildItem(
                 "io.netty.handler.ssl.BouncyCastleAlpnSslUtils"));
+
+        // Netty SSL context classes whose static initializers trigger BouncyCastle
+        // code paths. BouncyCastle's ASN1/CMS classes fail at build-time init due
+        // to version mismatches or missing fields, and they also create objects
+        // (SecureRandom, OIDs) that GraalVM disallows in the image heap.
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "io.netty.handler.ssl.JdkSslServerContext"));
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "io.netty.handler.ssl.JdkSslClientContext"));
+        runtimeInit.produce(new RuntimeInitializedClassBuildItem(
+                "io.netty.handler.ssl.BouncyCastlePemReader"));
+
+        // BouncyCastle classes pulled in transitively by Netty SSL. These are
+        // optional dependencies; we check the resolved RUNTIME dependency tree
+        // (not the build-time classpath) to avoid registering classes that
+        // GraalVM cannot find, which would cause ClassNotFoundException.
+        if (hasRuntimeDependency(curateOutcome, "org.bouncycastle")) {
+            registerIfPresent(runtimeInit, "org.bouncycastle.asn1.cms.CMSObjectIdentifiers");
+            registerIfPresent(runtimeInit, "org.bouncycastle.asn1.cms.ContentInfo");
+            registerIfPresent(runtimeInit, "org.bouncycastle.jsse.provider.BouncyCastleJsseProvider");
+        }
 
         // Cassandra driver classes that create InetSocketAddress / Inet4Address
         // instances during class initialization. GraalVM for JDK 25 changed the
@@ -166,6 +190,43 @@ class ScyllaDBOrmProcessor {
         // runtime, so it must not be instantiated at build time either.
         runtimeInit.produce(new RuntimeInitializedClassBuildItem(
                 CqlSessionProducer.class.getName()));
+
+        // Apache HTTP NTLMEngineImpl holds a SecureRandom in a static field which
+        // GraalVM disallows in the image heap. Only register when Apache HTTP Client
+        // is an actual runtime dependency (not just on the build-time classpath from
+        // deployment modules), otherwise GraalVM throws ClassNotFoundException.
+        if (hasRuntimeDependency(curateOutcome, "org.apache.httpcomponents")) {
+            registerIfPresent(runtimeInit, "org.apache.http.impl.auth.NTLMEngineImpl");
+        }
+    }
+
+    // Checks whether any RUNTIME dependency in the resolved application model
+    // matches the given groupId prefix. This ensures we only register classes
+    // for runtime initialization when they are actually on the native-image
+    // classpath, avoiding ClassNotFoundException during GraalVM compilation.
+    private static boolean hasRuntimeDependency(
+            CurateOutcomeBuildItem curateOutcome,
+            String groupIdPrefix) {
+        for (ResolvedDependency dep : curateOutcome.getApplicationModel().getRuntimeDependencies()) {
+            if (dep.getGroupId().startsWith(groupIdPrefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Registers a class for runtime initialization if it can be loaded from
+    // the current classloader. Should only be called after confirming the
+    // class's artifact is a runtime dependency via hasRuntimeDependency().
+    private static void registerIfPresent(
+            BuildProducer<RuntimeInitializedClassBuildItem> runtimeInit,
+            String className) {
+        try {
+            Thread.currentThread().getContextClassLoader().loadClass(className);
+            runtimeInit.produce(new RuntimeInitializedClassBuildItem(className));
+        } catch (ClassNotFoundException ignored) {
+            // Class not on classpath, skip runtime init registration
+        }
     }
 
     @BuildStep
