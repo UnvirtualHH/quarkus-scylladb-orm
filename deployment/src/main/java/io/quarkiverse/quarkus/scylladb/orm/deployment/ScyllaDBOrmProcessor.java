@@ -160,13 +160,15 @@ class ScyllaDBOrmProcessor {
         runtimeInit.produce(new RuntimeInitializedClassBuildItem(
                 "io.netty.handler.ssl.BouncyCastlePemReader"));
 
-        // BouncyCastle classes pulled in transitively by Netty SSL. These are
-        // optional dependencies; we check the resolved RUNTIME dependency tree
+        // BouncyCastle JSSE provider pulled in transitively by Netty SSL. This is
+        // an optional dependency; we check the resolved RUNTIME dependency tree
         // (not the build-time classpath) to avoid registering classes that
         // GraalVM cannot find, which would cause ClassNotFoundException.
+        // Note: We intentionally do NOT register org.bouncycastle.asn1.cms.*
+        // classes (CMSObjectIdentifiers, ContentInfo) because they are not
+        // needed for the Cassandra driver and can cause unresolved field errors
+        // when different BouncyCastle artifact versions coexist on the classpath.
         if (hasRuntimeDependency(curateOutcome, "org.bouncycastle")) {
-            registerIfPresent(runtimeInit, "org.bouncycastle.asn1.cms.CMSObjectIdentifiers");
-            registerIfPresent(runtimeInit, "org.bouncycastle.asn1.cms.ContentInfo");
             registerIfPresent(runtimeInit, "org.bouncycastle.jsse.provider.BouncyCastleJsseProvider");
         }
 
