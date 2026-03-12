@@ -401,6 +401,66 @@ public abstract class Repository<T, ID> {
         return row != null ? row.getLong(0) : null;
     }
 
+    // ----------------------------------------------------------
+    // Projection Query Methods
+    // ----------------------------------------------------------
+
+    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object... params) {
+        ResultSet rs = doExecuteQuery(cql, params);
+        Row row = rs.one();
+        return row != null ? mapperFn.apply(row) : null;
+    }
+
+    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1) {
+        ResultSet rs = doExecuteQuery(cql, p1);
+        Row row = rs.one();
+        return row != null ? mapperFn.apply(row) : null;
+    }
+
+    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2);
+        Row row = rs.one();
+        return row != null ? mapperFn.apply(row) : null;
+    }
+
+    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
+        Row row = rs.one();
+        return row != null ? mapperFn.apply(row) : null;
+    }
+
+    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object... params) {
+        ResultSet rs = doExecuteQuery(cql, params);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(mapperFn)
+                .toList();
+    }
+
+    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1) {
+        ResultSet rs = doExecuteQuery(cql, p1);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(mapperFn)
+                .toList();
+    }
+
+    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(mapperFn)
+                .toList();
+    }
+
+    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
+        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
+        return StreamSupport.stream(rs.spliterator(), false)
+                .map(mapperFn)
+                .toList();
+    }
+
+    // ----------------------------------------------------------
+    // Execute Methods
+    // ----------------------------------------------------------
+
     public void execute(String cql, Object... params) {
         doExecuteWrite(cql, params);
     }
@@ -439,6 +499,18 @@ public abstract class Repository<T, ID> {
 
     @SuppressWarnings("unchecked")
     private BoundStatement bind1(PreparedStatement ps, Object p1) {
+        // If a Map is passed as a single param, use named binding
+        if (p1 instanceof Map<?, ?> map) {
+            BoundStatementBuilder builder = ps.boundStatementBuilder();
+            map.forEach((k, v) -> {
+                if (v != null) {
+                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
+                } else {
+                    builder.setToNull(k.toString());
+                }
+            });
+            return builder.build();
+        }
         BoundStatementBuilder builder = ps.boundStatementBuilder();
         if (p1 != null) {
             builder.set(0, p1, (Class<Object>) p1.getClass());

@@ -335,6 +335,74 @@ public abstract class ReactiveRepository<T, ID> {
         return runScalarQuery(cql, row -> row.getLong(0), p1, p2, p3);
     }
 
+    // ----------------------------------------------------------
+    // Projection Query Methods
+    // ----------------------------------------------------------
+
+    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object... params) {
+        return runScalarQuery(cql, mapperFn, params);
+    }
+
+    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object p1) {
+        return runScalarQuery(cql, mapperFn, p1);
+    }
+
+    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
+        return runScalarQuery(cql, mapperFn, p1, p2);
+    }
+
+    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
+        return runScalarQuery(cql, mapperFn, p1, p2, p3);
+    }
+
+    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object... params) {
+        return Multi.createFrom().emitter(emitter -> {
+            prepareAndExecute(cql, params).whenComplete((firstPage, err) -> {
+                if (err != null) {
+                    emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
+                    return;
+                }
+                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, params);
+            });
+        });
+    }
+
+    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1) {
+        return Multi.createFrom().emitter(emitter -> {
+            prepareAndExecute(cql, p1).whenComplete((firstPage, err) -> {
+                if (err != null) {
+                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1 }, err));
+                    return;
+                }
+                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, new Object[] { p1 });
+            });
+        });
+    }
+
+    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
+        return Multi.createFrom().emitter(emitter -> {
+            prepareAndExecute(cql, p1, p2).whenComplete((firstPage, err) -> {
+                if (err != null) {
+                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, err));
+                    return;
+                }
+                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, new Object[] { p1, p2 });
+            });
+        });
+    }
+
+    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
+        return Multi.createFrom().emitter(emitter -> {
+            prepareAndExecute(cql, p1, p2, p3).whenComplete((firstPage, err) -> {
+                if (err != null) {
+                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, err));
+                    return;
+                }
+                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, new Object[] { p1, p2, p3 });
+            });
+        });
+    }
+
     public Uni<Paged<T>> queryPaged(String baseCql, Map<String, Object> params, Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String pagedCql = baseCql + " " + sortClause + " LIMIT " + pageable.size();
@@ -477,6 +545,38 @@ public abstract class ReactiveRepository<T, ID> {
         }
     }
 
+    private <R> void emitAllProjectionPages(AsyncResultSet rs,
+            io.smallrye.mutiny.subscription.MultiEmitter<? super R> emitter,
+            Function<Row, R> mapperFn, String cql, Object[] params) {
+        try {
+            for (Row row : rs.currentPage()) {
+                if (emitter.isCancelled()) {
+                    return;
+                }
+                emitter.emit(mapperFn.apply(row));
+            }
+            if (emitter.isCancelled()) {
+                return;
+            }
+            if (rs.hasMorePages()) {
+                rs.fetchNextPage().whenComplete((nextPage, err) -> {
+                    if (emitter.isCancelled()) {
+                        return;
+                    }
+                    if (err != null) {
+                        emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
+                    } else {
+                        emitAllProjectionPages(nextPage, emitter, mapperFn, cql, params);
+                    }
+                });
+            } else {
+                emitter.complete();
+            }
+        } catch (Exception e) {
+            emitter.fail(new ScyllaMappingException(tableName, "Failed to map projection row", e));
+        }
+    }
+
     protected Uni<Void> executeUpdate(String cql, Object... params) {
         return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, params))
                 .replaceWithVoid()
@@ -590,6 +690,18 @@ public abstract class ReactiveRepository<T, ID> {
 
     @SuppressWarnings("unchecked")
     private BoundStatement bind1(PreparedStatement ps, Object p1) {
+        // If a Map is passed as a single param, use named binding
+        if (p1 instanceof Map<?, ?> map) {
+            BoundStatementBuilder builder = ps.boundStatementBuilder();
+            map.forEach((k, v) -> {
+                if (v != null) {
+                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
+                } else {
+                    builder.setToNull(k.toString());
+                }
+            });
+            return builder.build();
+        }
         BoundStatementBuilder builder = ps.boundStatementBuilder();
         if (p1 != null) {
             builder.set(0, p1, (Class<Object>) p1.getClass());

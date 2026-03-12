@@ -17,6 +17,7 @@ import com.palantir.javapoet.*;
 import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil;
 
 /**
  * Factory for generating query methods from @Queries annotations.
@@ -166,6 +167,16 @@ final class QueryMethodFactory {
             } else {
                 bindableParamExpressions.add(p);
             }
+        }
+
+        // --- Projection support: check for resultClass ---
+        TypeMirror resultClassMirror = getResultClassMirror(q);
+        boolean isProjection = resultClassMirror != null
+                && resultClassMirror.getKind() != TypeKind.VOID;
+
+        if (isProjection) {
+            return buildProjectionMethod(reactive, mb, returnType, resultClassMirror,
+                    bindableParamExpressions, env);
         }
 
         // Detect query type
@@ -522,5 +533,172 @@ final class QueryMethodFactory {
     private static boolean hasEnumeratedAnnotation(VariableElement field) {
         return field.getAnnotationMirrors().stream()
                 .anyMatch(a -> a.getAnnotationType().toString().endsWith(".Enumerated"));
+    }
+
+    // --------------------------------------------------
+    // Projection Support
+    // --------------------------------------------------
+
+    private static TypeMirror getResultClassMirror(Query q) {
+        try {
+            q.resultClass();
+            return null;
+        } catch (MirroredTypeException mte) {
+            return mte.getTypeMirror();
+        }
+    }
+
+    private static MethodSpec buildProjectionMethod(
+            boolean reactive,
+            MethodSpec.Builder mb,
+            ReturnType returnType,
+            TypeMirror resultClassMirror,
+            List<String> paramExpressions,
+            ProcessingEnvironment env) {
+
+        TypeElement resultType = (TypeElement) env.getTypeUtils().asElement(resultClassMirror);
+        ClassName resultClassName = ClassName.get(resultType);
+
+        boolean isList = (returnType == ReturnType.LIST);
+
+        // Determine repository method to call
+        String repoCall = isList ? "queryProjectionList" : "queryProjection";
+
+        // Set return type
+        if (isList) {
+            if (reactive) {
+                mb.returns(ParameterizedTypeName.get(MUTINY_MULTI, resultClassName));
+            } else {
+                mb.returns(ParameterizedTypeName.get(ClassName.get(List.class), resultClassName));
+            }
+        } else {
+            if (reactive) {
+                mb.returns(ParameterizedTypeName.get(MUTINY_UNI, resultClassName));
+            } else {
+                mb.returns(resultClassName);
+            }
+        }
+
+        // Build the mapping lambda
+        CodeBlock mapperLambda;
+        if (resultType.getKind() == ElementKind.RECORD) {
+            mapperLambda = buildRecordMapperLambda(resultType, resultClassName, env);
+        } else {
+            mapperLambda = buildDtoMapperLambda(resultType, resultClassName, env);
+        }
+
+        // Build the return statement
+        if (paramExpressions.isEmpty()) {
+            mb.addStatement("return $L(query, $L)", repoCall, mapperLambda);
+        } else {
+            mb.addStatement("return $L(query, $L, $L)", repoCall, mapperLambda,
+                    String.join(", ", paramExpressions));
+        }
+
+        return mb.build();
+    }
+
+    private static CodeBlock buildRecordMapperLambda(
+            TypeElement recordType,
+            ClassName resultClassName,
+            ProcessingEnvironment env) {
+
+        List<? extends RecordComponentElement> components = recordType.getRecordComponents();
+
+        CodeBlock.Builder lambda = CodeBlock.builder();
+        lambda.add("row -> new $T(", resultClassName);
+
+        for (int i = 0; i < components.size(); i++) {
+            if (i > 0) {
+                lambda.add(", ");
+            }
+            RecordComponentElement comp = components.get(i);
+            String name = comp.getSimpleName().toString();
+            TypeMirror type = comp.asType();
+            lambda.add(generateValueExtraction(name, type));
+        }
+
+        lambda.add(")");
+        return lambda.build();
+    }
+
+    private static CodeBlock buildDtoMapperLambda(
+            TypeElement dtoType,
+            ClassName resultClassName,
+            ProcessingEnvironment env) {
+
+        List<VariableElement> fields = ElementFilter.fieldsIn(dtoType.getEnclosedElements())
+                .stream()
+                .filter(f -> !f.getModifiers().contains(Modifier.STATIC))
+                .toList();
+
+        CodeBlock.Builder lambda = CodeBlock.builder();
+        lambda.add("row -> {\n");
+        lambda.indent();
+        lambda.addStatement("$T _result = new $T()", resultClassName, resultClassName);
+
+        for (VariableElement field : fields) {
+            String name = field.getSimpleName().toString();
+            String setter = "set" + MapperUtil.capitalize(name);
+            TypeMirror type = field.asType();
+            CodeBlock extraction = generateValueExtraction(name, type);
+
+            if (type.getKind().isPrimitive()) {
+                lambda.addStatement("_result.$L($L)", setter, extraction);
+            } else {
+                String varName = name + "Val";
+                lambda.addStatement("var $L = $L", varName, extraction);
+                lambda.beginControlFlow("if ($L != null)", varName);
+                lambda.addStatement("_result.$L($L)", setter, varName);
+                lambda.endControlFlow();
+            }
+        }
+
+        lambda.addStatement("return _result");
+        lambda.unindent();
+        lambda.add("}");
+        return lambda.build();
+    }
+
+    private static CodeBlock generateValueExtraction(String columnName, TypeMirror type) {
+        String fqcn = type.toString();
+
+        // Primitives — no null check, use typed Row accessors
+        if (type.getKind().isPrimitive()) {
+            return switch (type.getKind()) {
+                case INT -> CodeBlock.of("row.getInt($S)", columnName);
+                case LONG -> CodeBlock.of("row.getLong($S)", columnName);
+                case BOOLEAN -> CodeBlock.of("row.getBoolean($S)", columnName);
+                case DOUBLE -> CodeBlock.of("row.getDouble($S)", columnName);
+                case FLOAT -> CodeBlock.of("row.getFloat($S)", columnName);
+                case SHORT -> CodeBlock.of("row.getShort($S)", columnName);
+                case BYTE -> CodeBlock.of("row.getByte($S)", columnName);
+                default -> CodeBlock.of("row.get($S, $T.class)", columnName, ClassName.bestGuess(fqcn));
+            };
+        }
+
+        // Object types — use generic row.get() with type class
+        return switch (fqcn) {
+            case "java.lang.String" ->
+                CodeBlock.of("row.getString($S)", columnName);
+            case "java.util.UUID" ->
+                CodeBlock.of("row.getUuid($S)", columnName);
+            case "java.time.Instant" ->
+                CodeBlock.of("row.getInstant($S)", columnName);
+            case "java.time.LocalDate" ->
+                CodeBlock.of("row.getLocalDate($S)", columnName);
+            case "java.time.LocalTime" ->
+                CodeBlock.of("row.getLocalTime($S)", columnName);
+            case "java.math.BigDecimal" ->
+                CodeBlock.of("row.getBigDecimal($S)", columnName);
+            case "java.math.BigInteger" ->
+                CodeBlock.of("row.getBigInteger($S)", columnName);
+            case "java.nio.ByteBuffer" ->
+                CodeBlock.of("row.getByteBuffer($S)", columnName);
+            case "java.net.InetAddress" ->
+                CodeBlock.of("row.getInetAddress($S)", columnName);
+            default ->
+                CodeBlock.of("row.get($S, $T.class)", columnName, ClassName.bestGuess(fqcn));
+        };
     }
 }

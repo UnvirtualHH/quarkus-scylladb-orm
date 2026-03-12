@@ -22,5 +22,7 @@ public @interface Query {
         Class<?> type();
     }
 
+    Class<?> resultClass() default void.class;
+
     Param[] paramTypes() default {};
 }

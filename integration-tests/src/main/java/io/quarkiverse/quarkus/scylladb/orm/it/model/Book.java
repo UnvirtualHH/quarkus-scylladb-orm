@@ -12,7 +12,9 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
         }),
         @Query(name = "deleteAll", cql = "TRUNCATE book", returnType = ReturnType.VOID),
         @Query(name = "findAllByTitle", cql = "SELECT * FROM book WHERE title = :title", paramTypes = @Query.Param(name = "title", type = String.class), returnType = ReturnType.LIST),
-        @Query(name = "touchAndReturn", cql = "UPDATE book SET active = true WHERE id = :id IF EXISTS", returnType = ReturnType.SINGLE)
+        @Query(name = "touchAndReturn", cql = "UPDATE book SET active = true WHERE id = :id IF EXISTS", returnType = ReturnType.SINGLE),
+        @Query(name = "getBookSummary", cql = "SELECT title, active FROM book WHERE title = :title LIMIT 1", returnType = ReturnType.SINGLE, paramTypes = @Query.Param(name = "title", type = String.class), resultClass = BookSummary.class),
+        @Query(name = "getAllBookSummaries", cql = "SELECT title, active FROM book", returnType = ReturnType.LIST, resultClass = BookSummary.class)
 })
 @GenerateRepository(GenerateRepository.RepositoryType.BOTH)
 public class Book {
