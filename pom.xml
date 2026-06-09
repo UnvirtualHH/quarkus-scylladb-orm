@@ -41,9 +41,11 @@
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <quarkus.version>3.32.2</quarkus.version>
+        <quarkus.version>3.34.1</quarkus.version>
         <javapoet.version>0.12.0</javapoet.version>
-        <cassandra-driver.version>4.19.2</cassandra-driver.version>
+        <!-- ScyllaDB shard-aware fork of the Java driver (API-compatible with the
+             DataStax/Apache driver, same com.datastax.oss.driver.* packages). -->
+        <scylla-driver.version>4.19.0.1</scylla-driver.version>
     </properties>
 
     <dependencyManagement>

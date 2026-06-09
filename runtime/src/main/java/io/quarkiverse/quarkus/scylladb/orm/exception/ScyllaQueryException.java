@@ -14,7 +14,7 @@ public class ScyllaQueryException extends ScyllaRepositoryException {
     private static String buildMessage(String table, String cql, Object[] params, Throwable cause) {
         return "Scylla query failed for table '" + table + "'\n"
                 + "CQL: " + cql + "\n"
-                + "Params: " + java.util.Arrays.toString(params)
+                + "Params: " + describeParams(params)
                 + (cause != null ? ("\nCause: " + cause.getMessage()) : "");
     }
 

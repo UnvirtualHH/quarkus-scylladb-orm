@@ -62,6 +62,16 @@ public interface ScyllaOrmConfig {
     ReconnectionConfig reconnection();
 
     /**
+     * Driver metrics configuration (Micrometer).
+     */
+    MetricsConfig metrics();
+
+    /**
+     * Request throttler (overload protection) configuration.
+     */
+    ThrottlerConfig throttler();
+
+    /**
      * Authentication settings.
      */
     interface AuthConfig {
@@ -81,9 +91,10 @@ public interface ScyllaOrmConfig {
      */
     interface PoolConfig {
         /**
-         * Number of connections per local host.
+         * Number of connections per local host. Default raised to 2 to give sustained
+         * read+write workloads headroom for peaks; tune per node core count.
          */
-        @WithDefault("1")
+        @WithDefault("2")
         int localSize();
 
         /**
@@ -200,6 +211,64 @@ public interface ScyllaOrmConfig {
          */
         @WithDefault("true")
         boolean agreementWarnOnFailure();
+    }
+
+    /**
+     * Driver metrics settings. Disabled by default. When enabled, the driver publishes
+     * metrics through Micrometer — a {@code MeterRegistry} CDI bean must be available
+     * (e.g. via the {@code quarkus-micrometer} extension), otherwise metrics stay off.
+     */
+    interface MetricsConfig {
+        /**
+         * Enable driver metrics via Micrometer.
+         */
+        @WithDefault("false")
+        boolean enabled();
+
+        /**
+         * Session-level metrics to publish. See the driver's metric ids.
+         */
+        @WithDefault("bytes-sent,bytes-received,connected-nodes,cql-requests,cql-client-timeouts,cql-prepared-cache-size")
+        java.util.List<String> sessionMetrics();
+
+        /**
+         * Per-node metrics to publish. Empty by default to limit cardinality.
+         */
+        @WithDefault("pool.open-connections,pool.in-flight,errors.request.unsent,errors.request.aborted,retries.total")
+        java.util.List<String> nodeMetrics();
+    }
+
+    /**
+     * Request throttler settings. Protects ScyllaDB from overload by bounding the number
+     * of concurrent (or per-second) in-flight requests; excess requests queue and then
+     * fail fast instead of piling up until they time out.
+     */
+    interface ThrottlerConfig {
+        /**
+         * Throttler type: {@code none} (pass-through), {@code concurrency}
+         * (ConcurrencyLimitingRequestThrottler) or {@code rate}
+         * (RateLimitingRequestThrottler).
+         */
+        @WithDefault("none")
+        String type();
+
+        /**
+         * Max concurrent requests (for {@code concurrency} type).
+         */
+        @WithDefault("10000")
+        int maxConcurrentRequests();
+
+        /**
+         * Max requests per second (for {@code rate} type).
+         */
+        @WithDefault("5000")
+        int maxRequestsPerSecond();
+
+        /**
+         * Max queued requests before new requests are rejected.
+         */
+        @WithDefault("10000")
+        int maxQueueSize();
     }
 
     /**

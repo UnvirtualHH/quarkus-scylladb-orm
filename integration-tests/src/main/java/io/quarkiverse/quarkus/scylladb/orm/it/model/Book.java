@@ -10,7 +10,7 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
         @Query(name = "findByTitle", cql = "SELECT * FROM book WHERE title = :title LIMIT 1", returnType = ReturnType.SINGLE, paramTypes = {
                 @Query.Param(name = "title", type = String.class)
         }),
-        @Query(name = "deleteAll", cql = "TRUNCATE book", returnType = ReturnType.VOID),
+        @Query(name = "deleteAll", cql = "TRUNCATE book", returnType = ReturnType.VOID, allowSchemaChanges = true),
         @Query(name = "findAllByTitle", cql = "SELECT * FROM book WHERE title = :title", paramTypes = @Query.Param(name = "title", type = String.class), returnType = ReturnType.LIST),
         @Query(name = "touchAndReturn", cql = "UPDATE book SET active = true WHERE id = :id IF EXISTS", returnType = ReturnType.SINGLE),
         @Query(name = "getBookSummary", cql = "SELECT title, active FROM book WHERE title = :title LIMIT 1", returnType = ReturnType.SINGLE, paramTypes = @Query.Param(name = "title", type = String.class), resultClass = BookSummary.class),

@@ -9,7 +9,7 @@ public class ScyllaWriteException extends ScyllaRepositoryException {
     private static String buildMessage(String table, String cql, Object[] params, Throwable cause) {
         return "Scylla write failed for table '" + table + "'\n"
                 + "CQL: " + cql + "\n"
-                + "Params: " + java.util.Arrays.toString(params)
+                + "Params: " + describeParams(params)
                 + (cause != null ? ("\nCause: " + cause.getMessage()) : "");
     }
 }

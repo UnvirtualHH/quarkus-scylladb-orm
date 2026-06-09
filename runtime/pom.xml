@@ -35,14 +35,22 @@
         </dependency>
 
         <dependency>
-            <groupId>org.apache.cassandra</groupId>
+            <groupId>com.scylladb</groupId>
             <artifactId>java-driver-core</artifactId>
-            <version>${cassandra-driver.version}</version>
+            <version>${scylla-driver.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.apache.cassandra</groupId>
+            <groupId>com.scylladb</groupId>
             <artifactId>java-driver-query-builder</artifactId>
-            <version>${cassandra-driver.version}</version>
+            <version>${scylla-driver.version}</version>
+        </dependency>
+        <!-- Micrometer metrics factory (same fork, avoids a second driver core on the
+             classpath). Pulls micrometer-core; metrics stay off unless explicitly enabled
+             and a MeterRegistry bean is present. -->
+        <dependency>
+            <groupId>com.scylladb</groupId>
+            <artifactId>java-driver-metrics-micrometer</artifactId>
+            <version>${scylla-driver.version}</version>
         </dependency>
 
         <dependency>

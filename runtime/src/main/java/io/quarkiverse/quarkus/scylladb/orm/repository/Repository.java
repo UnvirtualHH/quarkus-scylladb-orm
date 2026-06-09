@@ -120,6 +120,12 @@ public abstract class Repository<T, ID> {
         return row != null ? mapRow(row) : null;
     }
 
+    /**
+     * Fetches <strong>all</strong> rows of the table. This is an unbounded, cluster-wide
+     * scan that loads the entire table into memory and will overload coordinators / time
+     * out on large tables under load. Prefer {@link #findAll(Pageable, Sortable)} or a
+     * partition-scoped {@code @Query} in production.
+     */
     public List<T> findAll() {
         String cql = "SELECT * FROM " + tableName;
         ResultSet rs = doExecuteQuery(cql);
@@ -159,6 +165,11 @@ public abstract class Repository<T, ID> {
         return new Paged<>(content, -1, nextState);
     }
 
+    /**
+     * Counts <strong>all</strong> rows via {@code SELECT COUNT(*)}. This is a full,
+     * cluster-wide scan that is slow and often times out on large tables — avoid on hot
+     * paths in production. Consider maintaining a counter table instead.
+     */
     public long count() {
         String cql = "SELECT COUNT(*) as count FROM " + tableName;
         ResultSet rs = doExecuteQuery(cql);
@@ -481,124 +492,23 @@ public abstract class Repository<T, ID> {
     // Internal
     // ----------------------------------------------------------
 
-    @SuppressWarnings("unchecked")
-    private BoundStatement bindParams(PreparedStatement ps, Object[] params) {
-        if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
-            BoundStatementBuilder builder = ps.boundStatementBuilder();
-            map.forEach((k, v) -> {
-                if (v != null) {
-                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
-                } else {
-                    builder.setToNull(k.toString());
-                }
-            });
-            return builder.build();
-        }
-        return ps.bind(params);
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bind1(PreparedStatement ps, Object p1) {
-        // If a Map is passed as a single param, use named binding
-        if (p1 instanceof Map<?, ?> map) {
-            BoundStatementBuilder builder = ps.boundStatementBuilder();
-            map.forEach((k, v) -> {
-                if (v != null) {
-                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
-                } else {
-                    builder.setToNull(k.toString());
-                }
-            });
-            return builder.build();
-        }
-        BoundStatementBuilder builder = ps.boundStatementBuilder();
-        if (p1 != null) {
-            builder.set(0, p1, (Class<Object>) p1.getClass());
-        } else {
-            builder.setToNull(0);
-        }
-        return builder.build();
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bind2(PreparedStatement ps, Object p1, Object p2) {
-        BoundStatementBuilder builder = ps.boundStatementBuilder();
-        if (p1 != null) {
-            builder.set(0, p1, (Class<Object>) p1.getClass());
-        } else {
-            builder.setToNull(0);
-        }
-        if (p2 != null) {
-            builder.set(1, p2, (Class<Object>) p2.getClass());
-        } else {
-            builder.setToNull(1);
-        }
-        return builder.build();
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bind3(PreparedStatement ps, Object p1, Object p2, Object p3) {
-        BoundStatementBuilder builder = ps.boundStatementBuilder();
-        if (p1 != null) {
-            builder.set(0, p1, (Class<Object>) p1.getClass());
-        } else {
-            builder.setToNull(0);
-        }
-        if (p2 != null) {
-            builder.set(1, p2, (Class<Object>) p2.getClass());
-        } else {
-            builder.setToNull(1);
-        }
-        if (p3 != null) {
-            builder.set(2, p3, (Class<Object>) p3.getClass());
-        } else {
-            builder.setToNull(2);
-        }
-        return builder.build();
-    }
-
     private ResultSet doExecuteQuery(String cql, Object... params) {
         try {
             PreparedStatement ps = session.prepare(cql);
-            BoundStatement bound = bindParams(ps, params);
+            // Reads are idempotent: safe to retry and to use speculative execution.
+            BoundStatement bound = StatementBinder.bind(session, ps, params).setIdempotent(true);
             return session.execute(bound);
         } catch (Exception e) {
             throw new ScyllaQueryException(tableName, cql, params, e);
         }
     }
 
-    private ResultSet doExecuteQuery(String cql, Object p1) {
-        try {
-            PreparedStatement ps = session.prepare(cql);
-            return session.execute(bind1(ps, p1));
-        } catch (Exception e) {
-            throw new ScyllaQueryException(tableName, cql, new Object[] { p1 }, e);
-        }
-    }
-
-    private ResultSet doExecuteQuery(String cql, Object p1, Object p2) {
-        try {
-            PreparedStatement ps = session.prepare(cql);
-            return session.execute(bind2(ps, p1, p2));
-        } catch (Exception e) {
-            throw new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, e);
-        }
-    }
-
-    private ResultSet doExecuteQuery(String cql, Object p1, Object p2, Object p3) {
-        try {
-            PreparedStatement ps = session.prepare(cql);
-            return session.execute(bind3(ps, p1, p2, p3));
-        } catch (Exception e) {
-            throw new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, e);
-        }
-    }
-
     private ResultSet doExecutePagedQuery(String cql, Pageable pageable, Object... params) {
         try {
             PreparedStatement ps = session.prepare(cql);
-            BoundStatement bound = bindParams(ps, params);
-            bound = bound.setPageSize(pageable.size());
+            BoundStatement bound = StatementBinder.bind(session, ps, params)
+                    .setIdempotent(true)
+                    .setPageSize(pageable.size());
             if (pageable.pagingState() != null) {
                 bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
             }
@@ -611,37 +521,12 @@ public abstract class Repository<T, ID> {
     private ResultSet doExecuteWrite(String cql, Object... params) {
         try {
             PreparedStatement ps = session.prepare(cql);
-            BoundStatement bound = bindParams(ps, params);
+            // Writes are intentionally NOT marked idempotent: LWT / counter updates must
+            // not be blindly retried by the driver.
+            BoundStatement bound = StatementBinder.bind(session, ps, params);
             return session.execute(bound);
         } catch (Exception e) {
             throw new ScyllaWriteException(tableName, cql, params, e);
-        }
-    }
-
-    private ResultSet doExecuteWrite(String cql, Object p1) {
-        try {
-            PreparedStatement ps = session.prepare(cql);
-            return session.execute(bind1(ps, p1));
-        } catch (Exception e) {
-            throw new ScyllaWriteException(tableName, cql, new Object[] { p1 }, e);
-        }
-    }
-
-    private ResultSet doExecuteWrite(String cql, Object p1, Object p2) {
-        try {
-            PreparedStatement ps = session.prepare(cql);
-            return session.execute(bind2(ps, p1, p2));
-        } catch (Exception e) {
-            throw new ScyllaWriteException(tableName, cql, new Object[] { p1, p2 }, e);
-        }
-    }
-
-    private ResultSet doExecuteWrite(String cql, Object p1, Object p2, Object p3) {
-        try {
-            PreparedStatement ps = session.prepare(cql);
-            return session.execute(bind3(ps, p1, p2, p3));
-        } catch (Exception e) {
-            throw new ScyllaWriteException(tableName, cql, new Object[] { p1, p2, p3 }, e);
         }
     }
 

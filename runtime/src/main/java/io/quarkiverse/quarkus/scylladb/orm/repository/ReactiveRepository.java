@@ -94,6 +94,11 @@ public abstract class ReactiveRepository<T, ID> {
         return executeQueryForOne(cql, id);
     }
 
+    /**
+     * Streams <strong>all</strong> rows of the table. This is an unbounded, cluster-wide
+     * scan that will overload coordinators / time out on large tables under load. Prefer
+     * {@link #findAll(Pageable, Sortable)} or a partition-scoped {@code @Query} in production.
+     */
     public Multi<T> findAll() {
         String cql = "SELECT * FROM " + tableName;
         return executeQueryForList(cql);
@@ -133,6 +138,11 @@ public abstract class ReactiveRepository<T, ID> {
                 });
     }
 
+    /**
+     * Counts <strong>all</strong> rows via {@code SELECT COUNT(*)}. This is a full,
+     * cluster-wide scan that is slow and often times out on large tables — avoid on hot
+     * paths in production. Consider maintaining a counter table instead.
+     */
     public Uni<Long> count() {
         String cql = "SELECT COUNT(*) as count FROM " + tableName;
         return runScalarQuery(cql, row -> row.getLong("count"));
@@ -356,51 +366,19 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object... params) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, params).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
-                    return;
-                }
-                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, params);
-            });
-        });
+        return projectionMulti(cql, mapperFn, params);
     }
 
     public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, p1).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1 }, err));
-                    return;
-                }
-                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, new Object[] { p1 });
-            });
-        });
+        return projectionMulti(cql, mapperFn, p1);
     }
 
     public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, p1, p2).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, err));
-                    return;
-                }
-                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, new Object[] { p1, p2 });
-            });
-        });
+        return projectionMulti(cql, mapperFn, p1, p2);
     }
 
     public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, p1, p2, p3).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, err));
-                    return;
-                }
-                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, new Object[] { p1, p2, p3 });
-            });
-        });
+        return projectionMulti(cql, mapperFn, p1, p2, p3);
     }
 
     public Uni<Paged<T>> queryPaged(String baseCql, Map<String, Object> params, Pageable pageable, Sortable sortable) {
@@ -430,7 +408,7 @@ public abstract class ReactiveRepository<T, ID> {
     // ----------------------------------------------------------
 
     protected Uni<T> executeQueryForOne(String cql, Object... params) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, params))
+        return Uni.createFrom().completionStage(() -> prepareAndExecute(true, cql, params))
                 .map(rs -> {
                     Row row = rs.one();
                     return row != null ? mapper.map(row) : null;
@@ -438,37 +416,9 @@ public abstract class ReactiveRepository<T, ID> {
                 .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err));
     }
 
-    protected Uni<T> executeQueryForOne(String cql, Object p1) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapper.map(row) : null;
-                })
-                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, new Object[] { p1 }, err));
-    }
-
-    protected Uni<T> executeQueryForOne(String cql, Object p1, Object p2) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1, p2))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapper.map(row) : null;
-                })
-                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, err));
-    }
-
-    protected Uni<T> executeQueryForOne(String cql, Object p1, Object p2, Object p3) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1, p2, p3))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapper.map(row) : null;
-                })
-                .onFailure()
-                .transform(err -> new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, err));
-    }
-
     protected Multi<T> executeQueryForList(String cql, Object... params) {
         return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, params).whenComplete((firstPage, err) -> {
+            prepareAndExecute(true, cql, params).whenComplete((firstPage, err) -> {
                 if (err != null) {
                     emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
                     return;
@@ -478,40 +428,31 @@ public abstract class ReactiveRepository<T, ID> {
         });
     }
 
-    protected Multi<T> executeQueryForList(String cql, Object p1) {
+    protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object... params) {
+        return Uni.createFrom().completionStage(() -> prepareAndExecute(true, cql, params))
+                .map(rs -> {
+                    Row row = rs.one();
+                    return row != null ? mapperFn.apply(row) : null;
+                })
+                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err));
+    }
+
+    protected <R> Multi<R> projectionMulti(String cql, Function<Row, R> mapperFn, Object... params) {
         return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, p1).whenComplete((firstPage, err) -> {
+            prepareAndExecute(true, cql, params).whenComplete((firstPage, err) -> {
                 if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1 }, err));
+                    emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
                     return;
                 }
-                emitAllPages(firstPage, emitter, cql, new Object[] { p1 });
+                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, params);
             });
         });
     }
 
-    protected Multi<T> executeQueryForList(String cql, Object p1, Object p2) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, p1, p2).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, err));
-                    return;
-                }
-                emitAllPages(firstPage, emitter, cql, new Object[] { p1, p2 });
-            });
-        });
-    }
-
-    protected Multi<T> executeQueryForList(String cql, Object p1, Object p2, Object p3) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(cql, p1, p2, p3).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, err));
-                    return;
-                }
-                emitAllPages(firstPage, emitter, cql, new Object[] { p1, p2, p3 });
-            });
-        });
+    protected Uni<Void> executeUpdate(String cql, Object... params) {
+        return Uni.createFrom().completionStage(() -> prepareAndExecute(false, cql, params))
+                .replaceWithVoid()
+                .onFailure().transform(err -> new ScyllaWriteException(tableName, cql, params, err));
     }
 
     private void emitAllPages(AsyncResultSet rs, io.smallrye.mutiny.subscription.MultiEmitter<? super T> emitter,
@@ -577,175 +518,24 @@ public abstract class ReactiveRepository<T, ID> {
         }
     }
 
-    protected Uni<Void> executeUpdate(String cql, Object... params) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, params))
-                .replaceWithVoid()
-                .onFailure().transform(err -> new ScyllaWriteException(tableName, cql, params, err));
-    }
-
-    protected Uni<Void> executeUpdate(String cql, Object p1) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1))
-                .replaceWithVoid()
-                .onFailure().transform(err -> new ScyllaWriteException(tableName, cql, new Object[] { p1 }, err));
-    }
-
-    protected Uni<Void> executeUpdate(String cql, Object p1, Object p2) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1, p2))
-                .replaceWithVoid()
-                .onFailure().transform(err -> new ScyllaWriteException(tableName, cql, new Object[] { p1, p2 }, err));
-    }
-
-    protected Uni<Void> executeUpdate(String cql, Object p1, Object p2, Object p3) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1, p2, p3))
-                .replaceWithVoid()
-                .onFailure()
-                .transform(err -> new ScyllaWriteException(tableName, cql, new Object[] { p1, p2, p3 }, err));
-    }
-
-    protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object... params) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, params))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapperFn.apply(row) : null;
-                })
-                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err));
-    }
-
-    protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object p1) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapperFn.apply(row) : null;
-                })
-                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, new Object[] { p1 }, err));
-    }
-
-    protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1, p2))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapperFn.apply(row) : null;
-                })
-                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, new Object[] { p1, p2 }, err));
-    }
-
-    protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        return Uni.createFrom().completionStage(() -> prepareAndExecute(cql, p1, p2, p3))
-                .map(rs -> {
-                    Row row = rs.one();
-                    return row != null ? mapperFn.apply(row) : null;
-                })
-                .onFailure()
-                .transform(err -> new ScyllaQueryException(tableName, cql, new Object[] { p1, p2, p3 }, err));
-    }
-
-    private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object... params) {
+    private CompletionStage<AsyncResultSet> prepareAndExecute(boolean idempotent, String cql, Object... params) {
         return session.prepareAsync(cql).toCompletableFuture().thenCompose(ps -> {
-            BoundStatement bound = bindParams(ps, params);
+            BoundStatement bound = StatementBinder.bind(session, ps, params).setIdempotent(idempotent);
             return session.executeAsync(bound).toCompletableFuture();
         });
     }
 
-    private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object p1) {
-        return session.prepareAsync(cql).toCompletableFuture()
-                .thenCompose(ps -> session.executeAsync(bind1(ps, p1)).toCompletableFuture());
-    }
-
-    private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object p1, Object p2) {
-        return session.prepareAsync(cql).toCompletableFuture()
-                .thenCompose(ps -> session.executeAsync(bind2(ps, p1, p2)).toCompletableFuture());
-    }
-
-    private CompletionStage<AsyncResultSet> prepareAndExecute(String cql, Object p1, Object p2, Object p3) {
-        return session.prepareAsync(cql).toCompletableFuture()
-                .thenCompose(ps -> session.executeAsync(bind3(ps, p1, p2, p3)).toCompletableFuture());
-    }
-
     private CompletionStage<AsyncResultSet> prepareAndExecutePaged(String cql, Pageable pageable, Object... params) {
         return session.prepareAsync(cql).toCompletableFuture().thenCompose(ps -> {
-            BoundStatement bound = bindParams(ps, params);
-            bound = bound.setPageSize(pageable.size());
+            // Paged fetches are reads → idempotent.
+            BoundStatement bound = StatementBinder.bind(session, ps, params)
+                    .setIdempotent(true)
+                    .setPageSize(pageable.size());
             if (pageable.pagingState() != null) {
                 bound = bound.setPagingState(PagingState.fromString(pageable.pagingState()));
             }
             return session.executeAsync(bound).toCompletableFuture();
         });
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bindParams(PreparedStatement ps, Object[] params) {
-        if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
-            BoundStatementBuilder builder = ps.boundStatementBuilder();
-            map.forEach((k, v) -> {
-                if (v != null) {
-                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
-                } else {
-                    builder.setToNull(k.toString());
-                }
-            });
-            return builder.build();
-        }
-        return ps.bind(params);
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bind1(PreparedStatement ps, Object p1) {
-        // If a Map is passed as a single param, use named binding
-        if (p1 instanceof Map<?, ?> map) {
-            BoundStatementBuilder builder = ps.boundStatementBuilder();
-            map.forEach((k, v) -> {
-                if (v != null) {
-                    builder.set(k.toString(), v, (Class<Object>) v.getClass());
-                } else {
-                    builder.setToNull(k.toString());
-                }
-            });
-            return builder.build();
-        }
-        BoundStatementBuilder builder = ps.boundStatementBuilder();
-        if (p1 != null) {
-            builder.set(0, p1, (Class<Object>) p1.getClass());
-        } else {
-            builder.setToNull(0);
-        }
-        return builder.build();
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bind2(PreparedStatement ps, Object p1, Object p2) {
-        BoundStatementBuilder builder = ps.boundStatementBuilder();
-        if (p1 != null) {
-            builder.set(0, p1, (Class<Object>) p1.getClass());
-        } else {
-            builder.setToNull(0);
-        }
-        if (p2 != null) {
-            builder.set(1, p2, (Class<Object>) p2.getClass());
-        } else {
-            builder.setToNull(1);
-        }
-        return builder.build();
-    }
-
-    @SuppressWarnings("unchecked")
-    private BoundStatement bind3(PreparedStatement ps, Object p1, Object p2, Object p3) {
-        BoundStatementBuilder builder = ps.boundStatementBuilder();
-        if (p1 != null) {
-            builder.set(0, p1, (Class<Object>) p1.getClass());
-        } else {
-            builder.setToNull(0);
-        }
-        if (p2 != null) {
-            builder.set(1, p2, (Class<Object>) p2.getClass());
-        } else {
-            builder.setToNull(1);
-        }
-        if (p3 != null) {
-            builder.set(2, p3, (Class<Object>) p3.getClass());
-        } else {
-            builder.setToNull(2);
-        }
-        return builder.build();
     }
 
     public EntityMapper<T> getEntityMapper() {

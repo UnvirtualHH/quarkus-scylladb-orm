@@ -105,6 +105,8 @@ class ScyllaDBOrmProcessor {
                 "com.datastax.oss.driver.internal.core.tracker.NoopRequestTracker",
                 "com.datastax.oss.driver.internal.core.tracker.RequestLogger",
                 "com.datastax.oss.driver.internal.core.session.throttling.PassThroughRequestThrottler",
+                "com.datastax.oss.driver.internal.core.session.throttling.ConcurrencyLimitingRequestThrottler",
+                "com.datastax.oss.driver.internal.core.session.throttling.RateLimitingRequestThrottler",
                 "com.datastax.oss.driver.internal.core.metadata.NoopNodeStateListener",
                 "com.datastax.oss.driver.internal.core.metadata.schema.NoopSchemaChangeListener",
                 "com.datastax.oss.driver.internal.core.addresstranslation.PassThroughAddressTranslator",
@@ -113,7 +115,10 @@ class ScyllaDBOrmProcessor {
                 "com.datastax.oss.driver.internal.core.metrics.NoopMetricsFactory",
                 "com.datastax.oss.driver.internal.core.metrics.DefaultMetricIdGenerator",
                 "com.datastax.oss.driver.internal.core.auth.PlainTextAuthProvider",
-                "com.datastax.oss.driver.internal.core.type.codec.registry.DefaultCodecRegistry"
+                "com.datastax.oss.driver.internal.core.type.codec.registry.DefaultCodecRegistry",
+                // Micrometer metrics factory — instantiated reflectively from
+                // advanced.metrics.factory.class when quarkus.scylla.metrics.enabled=true.
+                "com.datastax.oss.driver.internal.metrics.micrometer.MicrometerMetricsFactory"
         };
 
         for (String className : driverClasses) {
