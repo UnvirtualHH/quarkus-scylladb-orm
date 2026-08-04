@@ -551,12 +551,32 @@ Source-incompatible changes:
 | `EntityMapper` gained `getColumnNames()` | Only affects hand-written mappers; generated ones are regenerated. |
 | `GeneratedValue.Strategy.SEQUENCE` removed | It was never implemented and silently did nothing. Use `UUID` or assign the value yourself. |
 
-### `@Query` must select every entity column when it maps back to the entity
-The generated mapper reads **every** mapped field of the entity from the row. A query
-like `SELECT id, name FROM person` with `returnType = LIST`/`SINGLE` therefore fails at
-runtime with `IllegalArgumentException: <column> is not a column in this row`. Either
-select all columns, or use a projection (`resultClass = MyDto.class`), which maps only
-the DTO's own fields.
+### Select lists and the entity mapper
+The generated mapper reads **every** mapped field of the entity, so any query that maps
+rows back to the entity has to select all of its columns.
+
+For `@Query` this is handled at build time:
+
+- `SELECT *` is expanded to the explicit column list. That avoids the driver's wildcard
+  select warning (prepared-statement invalidation on CQL4, plus result metadata on every
+  execution) at no cost to you.
+- An explicit list that misses entity columns is a **compile error** naming the missing
+  columns — it used to compile and then fail at runtime.
+- Projections (`resultClass = MyDto.class`) are left alone; they map only the DTO's own
+  fields, so a partial select is exactly right there.
+- Select lists using functions or aliases (`writetime(x)`, `x AS y`) are left alone —
+  guessing there would turn working queries into build failures.
+
+**Runtime CQL is not covered.** `repository.query(cql, ...)` and friends receive the
+string at runtime, so nothing can check or rewrite it. There, selecting a subset still
+fails with `IllegalArgumentException: <column> is not a column in this row`, and
+`SELECT *` still triggers the driver warning. Prefer `@Query`, or spell the columns out.
+
+### Blocking repositories refuse to run on the event loop
+Every method of the generated blocking repository blocks. Called from a Vert.x event loop
+thread it now fails fast with `BlockingOperationNotAllowedException` instead of stalling
+the loop — inject the reactive repository, or annotate the caller with
+`@io.smallrye.common.annotation.Blocking` so Quarkus dispatches it to a worker thread.
 
 ### Avoid unbounded scans on hot paths
 `findAll()` (no paging) and `count()` perform cluster-wide scans that will time out and

@@ -16,6 +16,8 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.KeyComponent;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Pageable;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Paged;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Sortable;
+import io.quarkus.runtime.BlockingOperationControl;
+import io.quarkus.runtime.BlockingOperationNotAllowedException;
 
 /**
  * Non-reactive repository base for Scylla/Cassandra.
@@ -76,6 +78,34 @@ public abstract class Repository<T, ID> {
         System.arraycopy(left, 0, out, 0, left.length);
         System.arraycopy(right, 0, out, left.length, right.length);
         return out;
+    }
+
+    /**
+     * Refuses to run a blocking driver call on a Vert.x event loop thread.
+     * <p>
+     * Every method of this class blocks. Injected into a reactive endpoint it would stall
+     * the event loop, and under load that takes the whole application down in a way that
+     * is hard to trace back here. Failing fast with a pointer to the fix is the lesser
+     * evil — use {@code ReactiveRepository}, or mark the caller {@code @Blocking}.
+     * <p>
+     * Outside a Quarkus runtime (plain unit tests, a bare JVM) the detector is not
+     * installed; anything unexpected there is treated as "blocking is fine", because this
+     * guard must never be the reason a legitimate call fails.
+     */
+    private void assertBlockingAllowed(String cql) {
+        boolean allowed;
+        try {
+            allowed = BlockingOperationControl.isBlockingAllowed();
+        } catch (RuntimeException | LinkageError ignored) {
+            return; // no Quarkus IO-thread detector available
+        }
+        if (!allowed) {
+            throw new BlockingOperationNotAllowedException(
+                    "Blocking ScyllaDB call on the Vert.x event loop thread (table '" + tableName + "'): " + cql
+                            + ". Inject the generated ReactiveRepository instead, or annotate the calling method "
+                            + "with @io.smallrye.common.annotation.Blocking so Quarkus dispatches it to a worker "
+                            + "thread.");
+        }
     }
 
     // ----------------------------------------------------------
@@ -362,6 +392,7 @@ public abstract class Repository<T, ID> {
     // ----------------------------------------------------------
 
     private ResultSet doExecuteQuery(String cql, Object... params) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             // Reads are idempotent: safe to retry and to use speculative execution.
@@ -373,6 +404,7 @@ public abstract class Repository<T, ID> {
     }
 
     private ResultSet doExecutePagedQuery(String cql, Pageable pageable, Object... params) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             BoundStatement bound = StatementBinder.bind(session, ps, params)
@@ -394,6 +426,7 @@ public abstract class Repository<T, ID> {
      */
     private ResultSet doExecuteColumnWrite(String cql, String[] columns, Map<String, Object> values,
             Object... keyParams) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             // Writes are intentionally NOT marked idempotent (see doExecuteWrite).
@@ -404,6 +437,7 @@ public abstract class Repository<T, ID> {
     }
 
     private ResultSet doExecuteWrite(String cql, Object... params) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             // Writes are intentionally NOT marked idempotent: LWT / counter updates must

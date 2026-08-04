@@ -119,7 +119,7 @@ public class MapperGenerator {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
-            String colName = resolveColumnName(field);
+            String colName = EntityFields.resolveColumnName(field);
             String typeString = field.asType().toString();
             Optional<TypeHandler> handler = TypeHandlerRegistry.findHandler(field,
                     env.getTypeUtils(), env.getElementUtils());
@@ -182,7 +182,7 @@ public class MapperGenerator {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
-            String colName = resolveColumnName(field);
+            String colName = EntityFields.resolveColumnName(field);
             Optional<TypeHandler> handler = TypeHandlerRegistry.findHandler(field,
                     env.getTypeUtils(), env.getElementUtils());
 
@@ -254,7 +254,7 @@ public class MapperGenerator {
         // Keys are already sorted by ordinal at compile time via partitionKeyFields/clusteringKeyFields
         for (KeyField key : keys) {
             var f = key.field();
-            String colName = resolveColumnName(f);
+            String colName = EntityFields.resolveColumnName(f);
             TypeName boxed = TypeName.get(f.asType()).box();
             b.addStatement("list.add($T.of($S, $T.of($T.class), entity.$L(), $L))",
                     ClassName.get("io.quarkiverse.quarkus.scylladb.orm.mapping", "KeyComponent"),
@@ -276,7 +276,7 @@ public class MapperGenerator {
                     .build();
         }
         String literal = keys.stream()
-                .map(k -> "\"" + resolveColumnName(k.field()) + "\"")
+                .map(k -> "\"" + EntityFields.resolveColumnName(k.field()) + "\"")
                 .collect(Collectors.joining(", "));
         return FieldSpec.builder(String[].class, fieldName, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
                 .initializer("{$L}", literal)
@@ -289,7 +289,7 @@ public class MapperGenerator {
      */
     private FieldSpec generateColumnNamesConstant(TypeElement entityType, ProcessingEnvironment env) {
         String literal = EntityFields.mappedFields(entityType, env).stream()
-                .map(f -> "\"" + resolveColumnName(f) + "\"")
+                .map(f -> "\"" + EntityFields.resolveColumnName(f) + "\"")
                 .collect(Collectors.joining(", "));
         return FieldSpec.builder(String[].class, "COLUMN_NAMES", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
                 .initializer(literal.isEmpty() ? "new String[0]" : "{" + literal + "}")
@@ -324,14 +324,6 @@ public class MapperGenerator {
     }
 
     // === Helper ===
-
-    private static String resolveColumnName(VariableElement field) {
-        Column colAnn = field.getAnnotation(Column.class);
-        if (colAnn != null && !colAnn.value().isEmpty()) {
-            return colAnn.value();
-        }
-        return field.getSimpleName().toString();
-    }
 
     private static String getterName(VariableElement field) {
         String name = capitalize(field.getSimpleName().toString());

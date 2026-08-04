@@ -14,6 +14,7 @@ import com.palantir.javapoet.ClassName;
 import com.palantir.javapoet.TypeName;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.ClusteringKey;
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Column;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.PartitionKey;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Transient;
 
@@ -54,6 +55,17 @@ public final class EntityFields {
         return allFields(type, env).stream()
                 .filter(f -> f.getAnnotation(Transient.class) == null)
                 .toList();
+    }
+
+    /** The column a field maps to — its {@code @Column} value, or the field name. */
+    public static String resolveColumnName(VariableElement field) {
+        Column column = field.getAnnotation(Column.class);
+        return column != null && !column.value().isEmpty() ? column.value() : field.getSimpleName().toString();
+    }
+
+    /** The columns {@code map(Row)} reads, in declaration order. */
+    public static List<String> mappedColumnNames(TypeElement type, ProcessingEnvironment env) {
+        return mappedFields(type, env).stream().map(EntityFields::resolveColumnName).toList();
     }
 
     public static List<KeyField> partitionKeyFields(TypeElement type, ProcessingEnvironment env) {
