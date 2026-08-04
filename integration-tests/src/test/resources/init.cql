@@ -59,5 +59,11 @@ id uuid PRIMARY KEY,
 created_at timestamp
 );
 
+CREATE TABLE IF NOT EXISTS audited (
+id uuid PRIMARY KEY,
+payload text,
+created_by text
+);
+
 CREATE INDEX IF NOT EXISTS person_name_idx ON person (name);
 CREATE INDEX IF NOT EXISTS book_title_idx ON book (title);

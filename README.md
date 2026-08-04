@@ -117,9 +117,9 @@ public class PersonReactiveService {
 |------------|-------------|
 | `@Table("name")` | Maps class to a table |
 | `@PartitionKey` | Marks field as partition key (use `ordinal` for composite keys) |
-| `@ClusteringKey` | Marks field as clustering key (supports `ordinal` and `order`) |
+| `@ClusteringKey` | Marks field as clustering key (use `ordinal` for composite keys) |
 | `@Column("name")` | Maps field to column (optional, defaults to field name) |
-| `@GeneratedValue` | Auto-generates values (UUID or SEQUENCE) |
+| `@GeneratedValue` | Assigns a random UUID on write when the field is null |
 | `@Transient` | Excludes field from persistence |
 | `@Enumerated` | Enum handling (STRING or ORDINAL) |
 | `@Convert` | Custom type conversion |
@@ -137,7 +137,7 @@ public class SensorData {
     @PartitionKey(ordinal = 1)
     private String region;
 
-    @ClusteringKey(ordinal = 0, order = ClusteringOrder.DESC)
+    @ClusteringKey(ordinal = 0)
     private Instant timestamp;
 
     @Column

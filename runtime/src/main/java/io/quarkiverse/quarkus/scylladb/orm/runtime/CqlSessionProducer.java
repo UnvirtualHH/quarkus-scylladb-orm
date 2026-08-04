@@ -85,11 +85,7 @@ public class CqlSessionProducer {
         // username/password was supplied is a dangerous misconfiguration.
         boolean hasUsername = config.auth().username().isPresent();
         boolean hasPassword = config.auth().password().isPresent();
-        if (hasUsername ^ hasPassword) {
-            throw new IllegalArgumentException(
-                    "ScyllaDB authentication is misconfigured: 'quarkus.scylla.auth.username' and "
-                            + "'quarkus.scylla.auth.password' must both be set, or neither.");
-        }
+        validateAuthPair(hasUsername, hasPassword);
         if (hasUsername) {
             builder.withAuthCredentials(
                     config.auth().username().get(),
@@ -134,6 +130,19 @@ public class CqlSessionProducer {
         } catch (Exception e) {
             // No read access to system_auth (good posture) or a different auth backend — skip.
             LOG.debugf("Skipping role privilege check for '%s': %s", role, e.getMessage());
+        }
+    }
+
+    /**
+     * Rejects half-configured credentials. Connecting anonymously because only one of the
+     * two was supplied is a silent downgrade, and failing with an opaque server-side auth
+     * error is not much better.
+     */
+    static void validateAuthPair(boolean hasUsername, boolean hasPassword) {
+        if (hasUsername ^ hasPassword) {
+            throw new IllegalArgumentException(
+                    "ScyllaDB authentication is misconfigured: 'quarkus.scylla.auth.username' and "
+                            + "'quarkus.scylla.auth.password' must both be set, or neither.");
         }
     }
 
@@ -240,13 +249,13 @@ public class CqlSessionProducer {
         }
     }
 
-    private String detectStoreType(String path) {
+    static String detectStoreType(String path) {
         return path.toLowerCase().endsWith(".p12") || path.toLowerCase().endsWith(".pfx")
                 ? "PKCS12"
                 : "JKS";
     }
 
-    private List<InetSocketAddress> parseContactPoints(String contactPointsConfig) {
+    static List<InetSocketAddress> parseContactPoints(String contactPointsConfig) {
         if (contactPointsConfig == null || contactPointsConfig.isBlank()) {
             throw new IllegalArgumentException(
                     "ScyllaDB contact points not configured. Set 'quarkus.scylla.contact-points' property.");
@@ -255,11 +264,11 @@ public class CqlSessionProducer {
         return Arrays.stream(contactPointsConfig.split(","))
                 .map(String::trim)
                 .filter(cp -> !cp.isEmpty())
-                .map(this::parseContactPoint)
+                .map(CqlSessionProducer::parseContactPoint)
                 .toList();
     }
 
-    private InetSocketAddress parseContactPoint(String contactPoint) {
+    static InetSocketAddress parseContactPoint(String contactPoint) {
         String host;
         String portStr;
 

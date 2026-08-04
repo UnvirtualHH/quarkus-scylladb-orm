@@ -8,10 +8,13 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.UUID;
 
+import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.ClusteringKey;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Column;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.GenerateRepository;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.PartitionKey;
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Table;
 
 /**
@@ -21,6 +24,15 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.Table;
  */
 @Table("event")
 @GenerateRepository(GenerateRepository.RepositoryType.BOTH)
+@Queries({
+        // Structural parameters are interpolated into the CQL rather than bound, so the
+        // generated guard is the only thing protecting the statement. Nothing exercised
+        // that path before.
+        @Query(name = "findInPartitionOrdered", cql = "SELECT * FROM event WHERE tenant = :tenant "
+                + "AND device_id = :deviceId ORDER BY :order", returnType = ReturnType.LIST),
+        @Query(name = "findInPartitionLimited", cql = "SELECT * FROM event WHERE tenant = :tenant "
+                + "AND device_id = :deviceId LIMIT :limit", returnType = ReturnType.LIST)
+})
 public class Event {
 
     @PartitionKey(ordinal = 0)

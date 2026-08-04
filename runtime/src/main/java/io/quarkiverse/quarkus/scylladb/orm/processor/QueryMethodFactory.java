@@ -56,11 +56,20 @@ final class QueryMethodFactory {
     private static final ClassName MUTINY_UNI = ClassName.get("io.smallrye.mutiny", "Uni");
     private static final ClassName MUTINY_MULTI = ClassName.get("io.smallrye.mutiny", "Multi");
 
+    /**
+     * The generated guard calls {@code String.matches(...)}, which compiles the pattern
+     * from scratch and therefore drops any flags the {@link Pattern} constant was built
+     * with. Inline flags survive that trip; a plain {@code Pattern.CASE_INSENSITIVE} did
+     * not, which made the emitted check stricter than the one written here.
+     */
+    private static String patternForGeneratedMatches(Pattern pattern) {
+        boolean caseInsensitive = (pattern.flags() & Pattern.CASE_INSENSITIVE) != 0;
+        return caseInsensitive ? "(?i)" + pattern.pattern() : pattern.pattern();
+    }
+
     // Allowed values for structural parameters (SQL injection prevention)
     private static final Pattern SAFE_ORDER_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*\\s+(ASC|DESC)$",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern SAFE_COLUMN_PATTERN = Pattern
-            .compile("^[A-Za-z_][A-Za-z0-9_]*(,\\s*[A-Za-z_][A-Za-z0-9_]*)*$");
     private static final Pattern SAFE_INTEGER_PATTERN = Pattern.compile("^\\d+$");
 
     private QueryMethodFactory() {
@@ -242,13 +251,28 @@ final class QueryMethodFactory {
     // Validation for SQL Injection Prevention
     // --------------------------------------------------
 
+    /**
+     * Emits the guard for a structural parameter.
+     * <p>
+     * Structural parameters are interpolated into the CQL rather than bound, so this
+     * validation is the only thing between the caller's string and the statement. It runs
+     * before the value reaches {@link String#format}.
+     */
     private static void addStructuralParamValidation(MethodSpec.Builder mb, String paramName) {
         String paramLower = paramName.toLowerCase(Locale.ROOT);
 
+        // A null would be interpolated as the literal text "null" and produce a CQL
+        // syntax error from the server, far away from the actual mistake.
+        mb.beginControlFlow("if ($L == null)", paramName);
+        mb.addStatement("throw new $T($S)", IllegalArgumentException.class,
+                "Structural parameter '" + paramName + "' must not be null: it is interpolated into the "
+                        + "CQL, not bound, so there is no null to bind.");
+        mb.endControlFlow();
+
         if (paramLower.equals("order") || paramLower.equals("orderby") || paramLower.equals("sort")) {
             // Validate ORDER BY clause format: "column ASC" or "column DESC"
-            mb.beginControlFlow("if ($L != null && !$L.matches($S))", paramName, paramName,
-                    SAFE_ORDER_PATTERN.pattern());
+            mb.beginControlFlow("if (!$L.matches($S))", paramName,
+                    patternForGeneratedMatches(SAFE_ORDER_PATTERN));
             mb.addStatement(
                     "throw new $T($S + $L)",
                     IllegalArgumentException.class,
@@ -257,15 +281,14 @@ final class QueryMethodFactory {
             mb.endControlFlow();
         } else if (paramLower.equals("limit") || paramLower.equals("offset")) {
             // Validate numeric values
-            mb.beginControlFlow("if ($L != null)", paramName);
             mb.addStatement("String $LStr = String.valueOf($L)", paramName, paramName);
-            mb.beginControlFlow("if (!$LStr.matches($S))", paramName, SAFE_INTEGER_PATTERN.pattern());
+            mb.beginControlFlow("if (!$LStr.matches($S))", paramName,
+                    patternForGeneratedMatches(SAFE_INTEGER_PATTERN));
             mb.addStatement(
                     "throw new $T($S + $LStr)",
                     IllegalArgumentException.class,
                     "Invalid numeric parameter: ",
                     paramName);
-            mb.endControlFlow();
             mb.endControlFlow();
         }
     }
