@@ -595,7 +595,7 @@ The extension handles common Java types automatically:
 - `UUID`, `String`, `Integer`, `Long`, `Double`, `Float`, `Boolean`
 - `Instant`, `LocalDate`, `LocalTime`
 - `BigDecimal`, `BigInteger`
-- `ByteBuffer`
+- `ByteBuffer`, `byte[]`
 - Collections: `List`, `Set`, `Map`
 - Enums via `@Enumerated(EnumType.STRING)` / `@Enumerated(EnumType.ORDINAL)`
 
@@ -604,7 +604,6 @@ fails at runtime with `CodecNotFoundException`:
 
 | Type | Use instead |
 |------|-------------|
-| `byte[]` | `ByteBuffer` |
 | `LocalDateTime` | `Instant` (a `LocalDateTime` has no time zone, so the conversion would be ambiguous), or an explicit `@Convert` |
 
 ### Custom Converters

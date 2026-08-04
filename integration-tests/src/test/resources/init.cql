@@ -51,7 +51,11 @@ settings text
 
 CREATE TABLE IF NOT EXISTS probe (
 id uuid PRIMARY KEY,
-raw blob,
+raw blob
+);
+
+CREATE TABLE IF NOT EXISTS temporal_probe (
+id uuid PRIMARY KEY,
 created_at timestamp
 );
 

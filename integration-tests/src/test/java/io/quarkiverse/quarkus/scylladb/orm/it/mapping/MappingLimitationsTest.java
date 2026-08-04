@@ -16,15 +16,17 @@ import io.quarkiverse.quarkus.scylladb.orm.it.model.Address;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.AddressBaseRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.Probe;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.ProbeBaseRepository;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.TemporalProbe;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.TemporalProbeBaseRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.util.ScyllaDbTestResource;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 
 /**
- * Characterization tests: these pin down mapping behaviour that is currently
- * <strong>broken or surprising</strong>, so that it cannot silently change and so that
- * the limitation stays discoverable. Each one is expected to be inverted when the
- * corresponding fix lands — see REVIEW-2026-08-04.md.
+ * Pins down mapping behaviour at the edges: the types that are supported through a
+ * dedicated handler, and the ones that deliberately are not. The negative cases are
+ * characterization tests — they keep a known limitation discoverable instead of letting
+ * it resurface as a mystery at runtime. See REVIEW-2026-08-04.md.
  */
 @QuarkusTest
 @QuarkusTestResource(ScyllaDbTestResource.class)
@@ -34,22 +36,35 @@ class MappingLimitationsTest {
     ProbeBaseRepository probeRepository;
 
     @Inject
+    TemporalProbeBaseRepository temporalProbeRepository;
+
+    @Inject
     AddressBaseRepository addressRepository;
 
-    /**
-     * {@code byte[]} is advertised in the README but has no {@code BLOB <-> byte[]}
-     * codec. Only {@code ByteBuffer} works. Invert this test once byte[] is supported.
-     */
+    /** {@code byte[]} round-trips through a {@code blob} column via ByteArrayTypeHandler. */
     @Test
-    void byteArrayFieldsAreNotSupported() {
+    void byteArrayFieldsRoundTrip() {
         Probe probe = new Probe();
         probe.setId(UUID.randomUUID());
         probe.setRaw("hi".getBytes(StandardCharsets.UTF_8));
+        probeRepository.save(probe);
 
-        Throwable cause = rootCause(assertThrows(RuntimeException.class, () -> probeRepository.save(probe)));
+        Probe found = probeRepository.findById(probe.getId());
 
-        assertInstanceOf(CodecNotFoundException.class, cause);
-        assertTrue(cause.getMessage().contains("BLOB"), cause.getMessage());
+        assertNotNull(found);
+        assertArrayEquals("hi".getBytes(StandardCharsets.UTF_8), found.getRaw());
+    }
+
+    /** Reading the same row twice must not consume the underlying buffer. */
+    @Test
+    void byteArrayFieldsSurviveRepeatedReads() {
+        Probe probe = new Probe();
+        probe.setId(UUID.randomUUID());
+        probe.setRaw("repeat".getBytes(StandardCharsets.UTF_8));
+        probeRepository.save(probe);
+
+        assertArrayEquals("repeat".getBytes(StandardCharsets.UTF_8), probeRepository.findById(probe.getId()).getRaw());
+        assertArrayEquals("repeat".getBytes(StandardCharsets.UTF_8), probeRepository.findById(probe.getId()).getRaw());
     }
 
     /**
@@ -59,11 +74,11 @@ class MappingLimitationsTest {
      */
     @Test
     void localDateTimeFieldsAreNotSupported() {
-        Probe probe = new Probe();
+        TemporalProbe probe = new TemporalProbe();
         probe.setId(UUID.randomUUID());
         probe.setCreatedAt(LocalDateTime.of(2026, 8, 4, 12, 0));
 
-        Throwable cause = rootCause(assertThrows(RuntimeException.class, () -> probeRepository.save(probe)));
+        Throwable cause = rootCause(assertThrows(RuntimeException.class, () -> temporalProbeRepository.save(probe)));
 
         assertInstanceOf(CodecNotFoundException.class, cause);
         assertTrue(cause.getMessage().contains("LocalDateTime"), cause.getMessage());
