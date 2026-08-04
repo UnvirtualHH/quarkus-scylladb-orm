@@ -47,6 +47,11 @@ public class ScyllaDbTestResource
         props.put("quarkus.scylla.contact-points", scylla.getHost() + ":" + scylla.getFirstMappedPort());
         props.put("quarkus.scylla.local-datacenter", "datacenter1");
         props.put("quarkus.scylla.keyspace", "orm_test");
+        // The 2s production default is too tight for the full-table COUNT(*) scans the
+        // test suite performs against a single containerised node. This is a property of
+        // the test environment, not of the extension — so it is raised here rather than
+        // via a command line flag, to keep the suite runnable with a plain `mvn verify`.
+        props.put("quarkus.scylla.request.timeout", "15s");
         return props;
     }
 

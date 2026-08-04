@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: JVM build + integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # The integration tests start a real ScyllaDB via Testcontainers.
+      # ubuntu-latest runners ship a working Docker daemon, so no extra setup
+      # is needed — this step only fails fast with a clear message if that
+      # ever changes.
+      - name: Verify Docker is available
+        run: docker info
+
+      # -Dgpg.skip=true: the maven-gpg-plugin is bound to the `verify` phase in
+      # the parent POM, and CI has no signing key. Signing happens during the
+      # release, which runs locally.
+      - name: Build and test
+        run: mvn -B -ntp verify -Dgpg.skip=true
+
+      - name: Upload surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: '**/target/surefire-reports/**'
+          retention-days: 7
