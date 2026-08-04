@@ -526,6 +526,13 @@ tombstones in ScyllaDB), but it also means setting a field to `null` does **not*
 stored value — the column is left untouched. To actively clear a column, issue an explicit
 `UPDATE ... SET col = null` (or `DELETE col`) via `@Query`.
 
+### `@Query` must select every entity column when it maps back to the entity
+The generated mapper reads **every** mapped field of the entity from the row. A query
+like `SELECT id, name FROM person` with `returnType = LIST`/`SINGLE` therefore fails at
+runtime with `IllegalArgumentException: <column> is not a column in this row`. Either
+select all columns, or use a projection (`resultClass = MyDto.class`), which maps only
+the DTO's own fields.
+
 ### Avoid unbounded scans on hot paths
 `findAll()` (no paging) and `count()` perform cluster-wide scans that will time out and
 overload coordinators on large tables. Use `findAll(Pageable, Sortable)`, partition-scoped
@@ -561,23 +568,35 @@ for operating at sustained write volume. Consider a request throttler
 
 The extension handles common Java types automatically:
 - `UUID`, `String`, `Integer`, `Long`, `Double`, `Float`, `Boolean`
-- `Instant`, `LocalDate`, `LocalDateTime`, `LocalTime`
+- `Instant`, `LocalDate`, `LocalTime`
 - `BigDecimal`, `BigInteger`
-- `byte[]`, `ByteBuffer`
+- `ByteBuffer`
 - Collections: `List`, `Set`, `Map`
+- Enums via `@Enumerated(EnumType.STRING)` / `@Enumerated(EnumType.ORDINAL)`
+
+**Not supported** — the driver has no codec for these, and a field of such a type
+fails at runtime with `CodecNotFoundException`:
+
+| Type | Use instead |
+|------|-------------|
+| `byte[]` | `ByteBuffer` |
+| `LocalDateTime` | `Instant` (a `LocalDateTime` has no time zone, so the conversion would be ambiguous), or an explicit `@Convert` |
 
 ### Custom Converters
+
+Implement `AttributeConverter<EntityType, CqlType>`. The converter needs a public
+no-argument constructor.
 
 ```java
 public class JsonConverter implements AttributeConverter<MyObject, String> {
 
     @Override
-    public String convertToDatabaseColumn(MyObject attribute) {
+    public String toCqlColumn(MyObject attribute) {
         return objectMapper.writeValueAsString(attribute);
     }
 
     @Override
-    public MyObject convertToEntityAttribute(String dbData) {
+    public MyObject toEntityAttribute(String dbData) {
         return objectMapper.readValue(dbData, MyObject.class);
     }
 }

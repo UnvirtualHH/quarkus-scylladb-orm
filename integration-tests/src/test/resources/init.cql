@@ -26,5 +26,34 @@ id uuid PRIMARY KEY,
 name text
 );
 
+CREATE TABLE IF NOT EXISTS event (
+tenant text,
+device_id uuid,
+occurred_at timestamp,
+event_id uuid,
+event_day date,
+time_of_day time,
+amount decimal,
+hit_count varint,
+payload blob,
+PRIMARY KEY ((tenant, device_id), occurred_at, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS profile (
+id uuid PRIMARY KEY,
+status text,
+tier int,
+tags list<text>,
+scores set<int>,
+attributes map<text, text>,
+settings text
+);
+
+CREATE TABLE IF NOT EXISTS probe (
+id uuid PRIMARY KEY,
+raw blob,
+created_at timestamp
+);
+
 CREATE INDEX IF NOT EXISTS person_name_idx ON person (name);
 CREATE INDEX IF NOT EXISTS book_title_idx ON book (title);
