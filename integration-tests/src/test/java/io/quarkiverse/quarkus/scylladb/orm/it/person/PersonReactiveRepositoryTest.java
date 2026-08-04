@@ -210,20 +210,20 @@ public class PersonReactiveRepositoryTest {
 
         assertNotNull(page1);
         assertEquals(1, page1.content().size());
+        // Unconditional — see the note on the blocking equivalent.
+        assertTrue(page1.hasNextPage(), "expected a paging state while more rows remain");
 
-        if (page1.nextPagingState() != null) {
-            Pageable pageable2 = new Pageable(1, page1.nextPagingState());
-            Paged<Person> page2 = personRepository.findAllPaged(pageable2, null)
-                    .subscribe().withSubscriber(UniAssertSubscriber.create())
-                    .awaitItem().assertCompleted()
-                    .getItem();
+        Pageable pageable2 = new Pageable(1, page1.nextPagingState());
+        Paged<Person> page2 = personRepository.findAllPaged(pageable2, null)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().assertCompleted()
+                .getItem();
 
-            assertNotNull(page2);
-            assertFalse(page2.content().isEmpty());
-            assertNotEquals(
-                    page1.content().get(0).getId(),
-                    page2.content().get(0).getId());
-        }
+        assertNotNull(page2);
+        assertFalse(page2.content().isEmpty());
+        assertNotEquals(
+                page1.content().get(0).getId(),
+                page2.content().get(0).getId());
     }
 
     @Test

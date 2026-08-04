@@ -30,18 +30,15 @@ public abstract class ReactiveRepository<T, ID> {
     protected final EntityMapper<T> mapper;
     protected final ReactiveRepositoryRegistry registry;
 
-    /**
-     * The mapper's columns, pre-joined for use as an explicit projection. Built once
-     * because it goes into every generated read.
-     */
-    protected final String columnList;
+    /** Constant per-entity CQL, derived once from the mapper. */
+    private final EntityStatements statements;
 
     public ReactiveRepository() {
         this.session = null;
         this.tableName = null;
         this.mapper = null;
         this.registry = null;
-        this.columnList = null;
+        this.statements = null;
     }
 
     public ReactiveRepository(
@@ -53,7 +50,7 @@ public abstract class ReactiveRepository<T, ID> {
         this.tableName = tableName;
         this.mapper = mapper;
         this.registry = registry;
-        this.columnList = mapper != null ? String.join(", ", mapper.getColumnNames()) : null;
+        this.statements = mapper != null ? EntityStatements.of(tableName, mapper) : null;
     }
 
     protected abstract Class<T> getEntityType();
@@ -75,20 +72,6 @@ public abstract class ReactiveRepository<T, ID> {
         return params;
     }
 
-    private String buildWhereClause(String[] pkNames, String[] ckNames) {
-        String[] names = java.util.stream.Stream.concat(
-                Arrays.stream(pkNames),
-                Arrays.stream(ckNames)).toArray(String[]::new);
-
-        if (names.length == 0) {
-            throw new IllegalStateException("No primary key columns defined for table " + tableName);
-        }
-
-        return Arrays.stream(names)
-                .map(n -> n + " = ?")
-                .collect(Collectors.joining(" AND "));
-    }
-
     // ----------------------------------------------------------
     // Repository API
     // ----------------------------------------------------------
@@ -98,7 +81,7 @@ public abstract class ReactiveRepository<T, ID> {
         if (pkNames.length != 1) {
             return Uni.createFrom().failure(new IllegalStateException("findById requires exactly one partition key."));
         }
-        String cql = String.format("SELECT %s FROM %s WHERE %s = ?", columnList, tableName, pkNames[0]);
+        String cql = String.format("SELECT %s FROM %s WHERE %s = ?", statements.columnList, tableName, pkNames[0]);
         return executeQueryForOne(cql, id);
     }
 
@@ -108,16 +91,16 @@ public abstract class ReactiveRepository<T, ID> {
      * {@link #findAll(Pageable, Sortable)} or a partition-scoped {@code @Query} in production.
      */
     public Multi<T> findAll() {
-        String cql = "SELECT " + columnList + " FROM " + tableName;
+        String cql = "SELECT " + statements.columnList + " FROM " + tableName;
         return executeQueryForList(cql);
     }
 
     public Multi<T> findAll(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT %s FROM %s %s LIMIT %d",
-                columnList, tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s LIMIT ?",
+                statements.columnList, tableName, sortClause);
 
-        return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable))
+        return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable, pageable.size()))
                 .onItem().transformToMulti(
                         rs -> Multi.createFrom().iterable(() -> rs.currentPage().iterator()))
                 .map(mapper::map);
@@ -125,25 +108,10 @@ public abstract class ReactiveRepository<T, ID> {
 
     public Uni<Paged<T>> findAllPaged(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT %s FROM %s %s LIMIT %d",
-                columnList, tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s", statements.columnList, tableName, sortClause);
 
         return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable))
-                .map(rs -> {
-                    List<T> content = StreamSupport.stream(rs.currentPage().spliterator(), false)
-                            .map(mapper::map)
-                            .toList();
-
-                    String nextStateStr = null;
-                    if (rs.hasMorePages()) {
-                        var pagingState = rs.getExecutionInfo().getSafePagingState();
-                        if (pagingState != null) {
-                            nextStateStr = pagingState.toString();
-                        }
-                    }
-
-                    return new Paged<>(content, -1, nextStateStr);
-                });
+                .map(this::toPage);
     }
 
     /**
@@ -178,7 +146,7 @@ public abstract class ReactiveRepository<T, ID> {
     public Uni<Boolean> exists(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
                 pkNames[0], tableName, where);
         return runScalarQuery(cql, row -> Boolean.TRUE, buildKeyParams(entity))
@@ -187,43 +155,27 @@ public abstract class ReactiveRepository<T, ID> {
 
     public Uni<T> save(T entity) {
         Map<String, Object> properties = mapper.toProperties(entity);
-
-        String columns = String.join(", ", properties.keySet());
-        String placeholders = properties.keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
-        String cql = String.format("INSERT INTO %s (%s) VALUES (%s)", tableName, columns, placeholders);
-
-        return executeUpdate(cql, properties.values().toArray())
+        return executeColumnWrite(statements.insertCql, statements.allColumns, properties)
                 .replaceWith(entity);
     }
 
     public Uni<T> update(T entity) {
+        if (statements.updateCql == null) {
+            return Uni.createFrom().item(entity); // entity is all key columns — nothing to SET
+        }
+
         Map<String, Object> properties = mapper.toProperties(entity);
-
-        String[] pkNames = mapper.getPartitionKeyNames();
-        String[] ckNames = mapper.getClusteringKeyNames();
-
-        // remove key columns from SET clause
-        for (String k : pkNames)
+        for (String k : mapper.getPartitionKeyNames())
             properties.remove(k);
-        for (String k : ckNames)
+        for (String k : mapper.getClusteringKeyNames())
             properties.remove(k);
 
         if (properties.isEmpty()) {
-            return Uni.createFrom().item(entity);
+            return Uni.createFrom().item(entity); // every non-key column is null
         }
 
-        String setClause = properties.keySet().stream()
-                .map(k -> k + " = ?")
-                .collect(Collectors.joining(", "));
-
-        String where = buildWhereClause(pkNames, ckNames);
-        String cql = String.format("UPDATE %s SET %s WHERE %s", tableName, setClause, where);
-
-        Object[] values = properties.values().toArray();
-        Object[] keys = buildKeyParams(entity);
-        Object[] params = concat(values, keys);
-
-        return executeUpdate(cql, params).replaceWith(entity);
+        return executeColumnWrite(statements.updateCql, statements.nonKeyColumns, properties,
+                buildKeyParams(entity)).replaceWith(entity);
     }
 
     public Uni<T> merge(T entity) {
@@ -242,7 +194,7 @@ public abstract class ReactiveRepository<T, ID> {
     public Uni<Void> delete(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("DELETE FROM %s WHERE %s", tableName, where);
         return executeUpdate(cql, buildKeyParams(entity));
     }
@@ -250,7 +202,7 @@ public abstract class ReactiveRepository<T, ID> {
     public Uni<Void> deleteByKeys(Object... keys) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
 
         int expected = pkNames.length + ckNames.length;
         if (keys.length != expected) {
@@ -265,7 +217,7 @@ public abstract class ReactiveRepository<T, ID> {
     public Uni<T> findByKeys(Object... keys) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
 
         int expected = pkNames.length + ckNames.length;
         if (keys.length != expected) {
@@ -273,7 +225,7 @@ public abstract class ReactiveRepository<T, ID> {
                     "Expected " + expected + " key parts, got " + keys.length));
         }
 
-        String cql = String.format("SELECT %s FROM %s WHERE %s", columnList, tableName, where);
+        String cql = String.format("SELECT %s FROM %s WHERE %s", statements.columnList, tableName, where);
         return executeQueryForOne(cql, keys);
     }
 
@@ -391,24 +343,21 @@ public abstract class ReactiveRepository<T, ID> {
 
     public Uni<Paged<T>> queryPaged(String baseCql, Map<String, Object> params, Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String pagedCql = baseCql + " " + sortClause + " LIMIT " + pageable.size();
+        String pagedCql = baseCql + " " + sortClause;
 
-        return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(pagedCql, pageable, params))
-                .map(rs -> {
-                    List<T> content = StreamSupport.stream(rs.currentPage().spliterator(), false)
-                            .map(mapper::map)
-                            .toList();
+        return Uni.createFrom()
+                .completionStage(() -> prepareAndExecutePaged(pagedCql, pageable, params != null ? params : Map.of()))
+                .map(this::toPage);
+    }
 
-                    String nextStateStr = null;
-                    if (rs.hasMorePages()) {
-                        var pagingState = rs.getExecutionInfo().getSafePagingState();
-                        if (pagingState != null) {
-                            nextStateStr = pagingState.toString();
-                        }
-                    }
+    /** Maps exactly the rows of the current page and carries the state for the next one. */
+    private Paged<T> toPage(AsyncResultSet rs) {
+        List<T> content = StreamSupport.stream(rs.currentPage().spliterator(), false)
+                .map(mapper::map)
+                .toList();
 
-                    return new Paged<>(content, -1, nextStateStr);
-                });
+        var pagingState = rs.getExecutionInfo().getSafePagingState();
+        return new Paged<>(content, -1, pagingState != null ? pagingState.toString() : null);
     }
 
     // ----------------------------------------------------------
@@ -455,6 +404,23 @@ public abstract class ReactiveRepository<T, ID> {
                 emitAllProjectionPages(firstPage, emitter, mapperFn, cql, params);
             });
         });
+    }
+
+    /**
+     * Executes a write whose statement text is fixed: columns absent from {@code values}
+     * are left unset instead of being bound to null, so the CQL — and therefore the
+     * prepared statement — stays the same regardless of which fields are populated.
+     */
+    protected Uni<Void> executeColumnWrite(String cql, String[] columns, Map<String, Object> values,
+            Object... keyParams) {
+        return Uni.createFrom()
+                .completionStage(() -> session.prepareAsync(cql).toCompletableFuture()
+                        .thenCompose(ps -> session
+                                .executeAsync(StatementBinder.bindColumns(session, ps, columns, values, keyParams))
+                                .toCompletableFuture()))
+                .replaceWithVoid()
+                .onFailure()
+                .transform(err -> new ScyllaWriteException(tableName, cql, values.values().toArray(), err));
     }
 
     protected Uni<Void> executeUpdate(String cql, Object... params) {
