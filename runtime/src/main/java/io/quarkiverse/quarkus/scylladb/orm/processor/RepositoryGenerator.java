@@ -28,9 +28,11 @@ public class RepositoryGenerator {
 
         String fullClassName = packageName + "." + repositoryClassName;
 
+        // Protected, not public: it exists only so CDI can build a client proxy, and
+        // an instance created through it has no session and would NPE on every call.
         MethodSpec noArgsConstructor = MethodSpec.constructorBuilder()
                 .addStatement("super()")
-                .addModifiers(Modifier.PUBLIC)
+                .addModifiers(Modifier.PROTECTED)
                 .build();
 
         MethodSpec constructor = MethodSpec.constructorBuilder()

@@ -33,7 +33,12 @@ public abstract class ReactiveRepository<T, ID> {
     /** Constant per-entity CQL, derived once from the mapper. */
     private final EntityStatements statements;
 
-    public ReactiveRepository() {
+    /**
+     * Required so CDI can subclass this for its client proxy. Leaves every field null,
+     * so an instance built through it is unusable — protected to keep it out of reach of
+     * application code.
+     */
+    protected ReactiveRepository() {
         this.session = null;
         this.tableName = null;
         this.mapper = null;
@@ -237,48 +242,12 @@ public abstract class ReactiveRepository<T, ID> {
         return executeQueryForList(cql, params);
     }
 
-    public Multi<T> query(String cql, Object p1) {
-        return executeQueryForList(cql, p1);
-    }
-
-    public Multi<T> query(String cql, Object p1, Object p2) {
-        return executeQueryForList(cql, p1, p2);
-    }
-
-    public Multi<T> query(String cql, Object p1, Object p2, Object p3) {
-        return executeQueryForList(cql, p1, p2, p3);
-    }
-
     public Uni<T> querySingle(String cql, Object... params) {
         return executeQueryForOne(cql, params);
     }
 
-    public Uni<T> querySingle(String cql, Object p1) {
-        return executeQueryForOne(cql, p1);
-    }
-
-    public Uni<T> querySingle(String cql, Object p1, Object p2) {
-        return executeQueryForOne(cql, p1, p2);
-    }
-
-    public Uni<T> querySingle(String cql, Object p1, Object p2, Object p3) {
-        return executeQueryForOne(cql, p1, p2, p3);
-    }
-
     public Uni<Void> execute(String cql, Object... params) {
         return executeUpdate(cql, params);
-    }
-
-    public Uni<Void> execute(String cql, Object p1) {
-        return executeUpdate(cql, p1);
-    }
-
-    public Uni<Void> execute(String cql, Object p1, Object p2) {
-        return executeUpdate(cql, p1, p2);
-    }
-
-    public Uni<Void> execute(String cql, Object p1, Object p2, Object p3) {
-        return executeUpdate(cql, p1, p2, p3);
     }
 
     public <R> Uni<R> queryScalar(String cql, Function<Row, R> mapperFn, Object... params) {
@@ -293,18 +262,6 @@ public abstract class ReactiveRepository<T, ID> {
         return runScalarQuery(cql, row -> row.getLong(0), params);
     }
 
-    public Uni<Long> queryScalar(String cql, Object p1) {
-        return runScalarQuery(cql, row -> row.getLong(0), p1);
-    }
-
-    public Uni<Long> queryScalar(String cql, Object p1, Object p2) {
-        return runScalarQuery(cql, row -> row.getLong(0), p1, p2);
-    }
-
-    public Uni<Long> queryScalar(String cql, Object p1, Object p2, Object p3) {
-        return runScalarQuery(cql, row -> row.getLong(0), p1, p2, p3);
-    }
-
     // ----------------------------------------------------------
     // Projection Query Methods
     // ----------------------------------------------------------
@@ -313,32 +270,8 @@ public abstract class ReactiveRepository<T, ID> {
         return runScalarQuery(cql, mapperFn, params);
     }
 
-    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object p1) {
-        return runScalarQuery(cql, mapperFn, p1);
-    }
-
-    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        return runScalarQuery(cql, mapperFn, p1, p2);
-    }
-
-    public <R> Uni<R> queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        return runScalarQuery(cql, mapperFn, p1, p2, p3);
-    }
-
     public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object... params) {
         return projectionMulti(cql, mapperFn, params);
-    }
-
-    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1) {
-        return projectionMulti(cql, mapperFn, p1);
-    }
-
-    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        return projectionMulti(cql, mapperFn, p1, p2);
-    }
-
-    public <R> Multi<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        return projectionMulti(cql, mapperFn, p1, p2, p3);
     }
 
     public Uni<Paged<T>> queryPaged(String baseCql, Map<String, Object> params, Pageable pageable, Sortable sortable) {
@@ -357,7 +290,7 @@ public abstract class ReactiveRepository<T, ID> {
                 .toList();
 
         var pagingState = rs.getExecutionInfo().getSafePagingState();
-        return new Paged<>(content, -1, pagingState != null ? pagingState.toString() : null);
+        return new Paged<>(content, pagingState != null ? pagingState.toString() : null);
     }
 
     // ----------------------------------------------------------

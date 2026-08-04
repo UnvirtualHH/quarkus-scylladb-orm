@@ -24,10 +24,10 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.Table;
  */
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("io.quarkiverse.quarkus.scylladb.orm.mapping.Table")
-@SupportedSourceVersion(SourceVersion.RELEASE_21)
+@SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class EntityMapperProcessor extends AbstractProcessor {
 
-    private MapperGenerator mapperGenerator;
+    private final MapperGenerator mapperGenerator = new MapperGenerator();
     private final RepositoryGenerator repositoryGenerator = new RepositoryGenerator();
     private final ReactiveRepositoryGenerator reactiveRepositoryGenerator = new ReactiveRepositoryGenerator();
 
@@ -59,7 +59,6 @@ public class EntityMapperProcessor extends AbstractProcessor {
             String mapperClassName = entityName + "Mapper";
             String mapperFQN = packageName + "." + mapperClassName;
 
-            mapperGenerator = new MapperGenerator();
             if (generatedClasses.add(mapperFQN)) {
                 mapperGenerator.generateMapper(packageName, entityType, mapperClassName, processingEnv);
             }

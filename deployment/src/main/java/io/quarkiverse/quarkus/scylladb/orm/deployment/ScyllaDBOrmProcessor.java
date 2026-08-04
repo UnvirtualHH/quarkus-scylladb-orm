@@ -16,7 +16,6 @@ import io.quarkus.deployment.builditem.StaticInitConfigBuilderBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.NativeImageResourcePatternsBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
-import io.quarkus.deployment.builditem.nativeimage.ServiceProviderBuildItem;
 import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
 import io.quarkus.maven.dependency.ResolvedDependency;
 
@@ -66,6 +65,14 @@ class ScyllaDBOrmProcessor {
                 .fields(true)
                 .build());
         reflectiveClass.produce(ReflectiveClassBuildItem.builder(ScyllaOrmConfig.ReconnectionConfig.class)
+                .methods(true)
+                .fields(true)
+                .build());
+        reflectiveClass.produce(ReflectiveClassBuildItem.builder(ScyllaOrmConfig.MetricsConfig.class)
+                .methods(true)
+                .fields(true)
+                .build());
+        reflectiveClass.produce(ReflectiveClassBuildItem.builder(ScyllaOrmConfig.ThrottlerConfig.class)
                 .methods(true)
                 .fields(true)
                 .build());
@@ -236,12 +243,4 @@ class ScyllaDBOrmProcessor {
         }
     }
 
-    @BuildStep
-    void registerServiceProviders(
-            BuildProducer<ServiceProviderBuildItem> serviceProviders) {
-        // Register the Cassandra driver's default session factory for ServiceLoader
-        serviceProviders.produce(new ServiceProviderBuildItem(
-                "com.datastax.oss.driver.api.core.session.SessionBuilder",
-                "com.datastax.oss.driver.internal.core.session.DefaultSession"));
-    }
 }

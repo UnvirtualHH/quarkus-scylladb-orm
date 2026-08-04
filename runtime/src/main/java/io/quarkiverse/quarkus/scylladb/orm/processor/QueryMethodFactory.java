@@ -31,9 +31,13 @@ final class QueryMethodFactory {
     private static final Pattern COLUMN_PATTERN = Pattern.compile("(\\w+)\\s*(=|<|>|<=|>=|IN)\\s*\\?");
     private static final Pattern LIMIT_ONE_PATTERN = Pattern.compile("\\bLIMIT\\s+1\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern SELECT_PATTERN = Pattern.compile("^\\s*SELECT\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern WRITE_PATTERN = Pattern.compile("\\b(INSERT|UPDATE|DELETE|TRUNCATE)\\b",
+    // Anchored to the leading keyword, like SCHEMA_OR_TRUNCATE_LEADING below: a CQL
+    // statement's verb is always first, so an unanchored search would misclassify a
+    // statement that merely mentions the word in a string literal or identifier.
+    private static final Pattern WRITE_PATTERN = Pattern.compile("^\\s*(INSERT|UPDATE|DELETE|TRUNCATE)\\b",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern SCHEMA_PATTERN = Pattern.compile("\\b(CREATE|ALTER|DROP)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SCHEMA_PATTERN = Pattern.compile("^\\s*(CREATE|ALTER|DROP)\\b",
+            Pattern.CASE_INSENSITIVE);
     // Schema-altering / TRUNCATE statements always begin with the verb, so anchor the
     // guard to the leading keyword. This avoids false positives on string literals or
     // identifiers that merely contain these words (e.g. WHERE action = 'DROP').
@@ -268,9 +272,16 @@ final class QueryMethodFactory {
         return WRITE_PATTERN.matcher(cql).find();
     }
 
+    // "IF EXISTS" / "IF NOT EXISTS" / "IF col = ..." always follow the SET or VALUES
+    // clause, so require the keyword to stand alone rather than appear anywhere -
+    // including inside a string literal such as SET note = 'if you like'.
+    private static final Pattern CONDITIONAL_PATTERN = Pattern.compile(
+            "\\bIF\\s+(NOT\\s+)?(EXISTS\\b|[A-Za-z_][A-Za-z0-9_]*\\s*(=|<|>|<=|>=))",
+            Pattern.CASE_INSENSITIVE);
+
     private static boolean isConditional(String cql) {
-        String upper = cql.toUpperCase(Locale.ROOT);
-        return upper.contains(" IF ") && !upper.contains(" RETURNING ");
+        return CONDITIONAL_PATTERN.matcher(cql).find()
+                && !cql.toUpperCase(Locale.ROOT).contains(" RETURNING ");
     }
 
     private static boolean isReturning(String cql) {

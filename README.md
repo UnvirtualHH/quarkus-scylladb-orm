@@ -526,6 +526,31 @@ tombstones in ScyllaDB), but it also means setting a field to `null` does **not*
 stored value — the column is left untouched. To actively clear a column, issue an explicit
 `UPDATE ... SET col = null` (or `DELETE col`) via `@Query`.
 
+### Upgrading to 1.1.0
+
+Behaviour changes that need no action:
+
+- Built-in reads select an explicit column list instead of `SELECT *`. This removes the
+  driver's prepared-statement-invalidation warning and the per-execution metadata
+  overhead it forces. Your own `@Query` CQL is untouched — prefer explicit columns there
+  too.
+- `save()`/`update()` bind a fixed column set and leave null fields *unset*. Semantics are
+  unchanged (no tombstones, a null still does not clear a column), but an entity now uses
+  one prepared statement instead of up to one per null-pattern.
+- `findAllPaged()`/`queryPaged()` **actually paginate now**. They previously appended a
+  `LIMIT`, which caps the whole result set, so the server returned no paging state and
+  `hasNextPage()` was always `false`. If you worked around this, remove the workaround.
+
+Source-incompatible changes:
+
+| Change | Migration |
+|--------|-----------|
+| Repositories are typed on their partition key (`Repository<Person, UUID>` instead of `Repository<Person, Object>`) | Fix any call passing a wrongly typed id — it was silently failing at runtime before. Entities with a composite partition key keep `Object`; use `findByKeys`. |
+| `Paged` no longer has `totalElements` | It was hard-coded to `-1` on every path. Use `count()` if you really need a total. |
+| `query`/`querySingle`/`queryScalar`/`execute`/`queryProjection` lost their 1/2/3-argument overloads | The varargs overload covers them; no call site should need changing. |
+| `EntityMapper` gained `getColumnNames()` | Only affects hand-written mappers; generated ones are regenerated. |
+| `GeneratedValue.Strategy.SEQUENCE` removed | It was never implemented and silently did nothing. Use `UUID` or assign the value yourself. |
+
 ### `@Query` must select every entity column when it maps back to the entity
 The generated mapper reads **every** mapped field of the entity from the row. A query
 like `SELECT id, name FROM person` with `returnType = LIST`/`SINGLE` therefore fails at

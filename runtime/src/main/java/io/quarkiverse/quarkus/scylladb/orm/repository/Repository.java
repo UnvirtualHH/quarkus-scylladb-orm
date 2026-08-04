@@ -31,7 +31,12 @@ public abstract class Repository<T, ID> {
     /** Constant per-entity CQL, derived once from the mapper. */
     private final EntityStatements statements;
 
-    public Repository() {
+    /**
+     * Required so CDI can subclass this for its client proxy. Leaves every field null,
+     * so an instance built through it is unusable — protected to keep it out of reach of
+     * application code.
+     */
+    protected Repository() {
         this.session = null;
         this.tableName = null;
         this.mapper = null;
@@ -270,27 +275,6 @@ public abstract class Repository<T, ID> {
                 .toList();
     }
 
-    public List<T> query(String cql, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-    }
-
-    public List<T> query(String cql, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-    }
-
-    public List<T> query(String cql, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-    }
-
     public List<T> query(String cql, Pageable pageable, Sortable sortable, Object... params) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
         String pagedCql = String.format("%s %s LIMIT ?", cql, sortClause);
@@ -323,29 +307,11 @@ public abstract class Repository<T, ID> {
         }
 
         var pagingState = rs.getExecutionInfo().getSafePagingState();
-        return new Paged<>(content, -1, pagingState != null ? pagingState.toString() : null);
+        return new Paged<>(content, pagingState != null ? pagingState.toString() : null);
     }
 
     public T querySingle(String cql, Object... params) {
         ResultSet rs = doExecuteQuery(cql, params);
-        Row row = rs.one();
-        return row != null ? mapRow(row) : null;
-    }
-
-    public T querySingle(String cql, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        Row row = rs.one();
-        return row != null ? mapRow(row) : null;
-    }
-
-    public T querySingle(String cql, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        Row row = rs.one();
-        return row != null ? mapRow(row) : null;
-    }
-
-    public T querySingle(String cql, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
         Row row = rs.one();
         return row != null ? mapRow(row) : null;
     }
@@ -366,48 +332,12 @@ public abstract class Repository<T, ID> {
         return row != null ? row.getLong(0) : null;
     }
 
-    public Long queryScalar(String cql, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        Row row = rs.one();
-        return row != null ? row.getLong(0) : null;
-    }
-
-    public Long queryScalar(String cql, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        Row row = rs.one();
-        return row != null ? row.getLong(0) : null;
-    }
-
-    public Long queryScalar(String cql, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
-        Row row = rs.one();
-        return row != null ? row.getLong(0) : null;
-    }
-
     // ----------------------------------------------------------
     // Projection Query Methods
     // ----------------------------------------------------------
 
     public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object... params) {
         ResultSet rs = doExecuteQuery(cql, params);
-        Row row = rs.one();
-        return row != null ? mapperFn.apply(row) : null;
-    }
-
-    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        Row row = rs.one();
-        return row != null ? mapperFn.apply(row) : null;
-    }
-
-    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        Row row = rs.one();
-        return row != null ? mapperFn.apply(row) : null;
-    }
-
-    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
         Row row = rs.one();
         return row != null ? mapperFn.apply(row) : null;
     }
@@ -419,45 +349,12 @@ public abstract class Repository<T, ID> {
                 .toList();
     }
 
-    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapperFn)
-                .toList();
-    }
-
-    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapperFn)
-                .toList();
-    }
-
-    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapperFn)
-                .toList();
-    }
-
     // ----------------------------------------------------------
     // Execute Methods
     // ----------------------------------------------------------
 
     public void execute(String cql, Object... params) {
         doExecuteWrite(cql, params);
-    }
-
-    public void execute(String cql, Object p1) {
-        doExecuteWrite(cql, p1);
-    }
-
-    public void execute(String cql, Object p1, Object p2) {
-        doExecuteWrite(cql, p1, p2);
-    }
-
-    public void execute(String cql, Object p1, Object p2, Object p3) {
-        doExecuteWrite(cql, p1, p2, p3);
     }
 
     // ----------------------------------------------------------

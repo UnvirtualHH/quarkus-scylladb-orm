@@ -39,8 +39,7 @@ jobs:
         run: |
           mvn -B -ntp verify \
             -Dnative \
-            -Dquarkus.native.container-build=true \
-            -Dgpg.skip=true
+            -Dquarkus.native.container-build=true
 
       - name: Upload build reports on failure
         if: failure()

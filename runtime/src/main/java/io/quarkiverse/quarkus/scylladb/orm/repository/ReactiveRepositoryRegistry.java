@@ -19,9 +19,9 @@ public class ReactiveRepositoryRegistry {
      * Called by generated repositories in @PostConstruct.
      */
     public <T, ID> void register(Class<T> entityType, ReactiveRepository<T, ID> repository) {
-        if (!isRegistered(entityType)) {
-            registry.put(entityType, repository);
-        }
+        // putIfAbsent, not check-then-put: the latter is not atomic on a
+        // ConcurrentHashMap and two concurrent registrations could both pass the check.
+        registry.putIfAbsent(entityType, repository);
     }
 
     /**

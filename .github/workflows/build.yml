@@ -34,11 +34,8 @@ jobs:
       - name: Verify Docker is available
         run: docker info
 
-      # -Dgpg.skip=true: the maven-gpg-plugin is bound to the `verify` phase in
-      # the parent POM, and CI has no signing key. Signing happens during the
-      # release, which runs locally.
       - name: Build and test
-        run: mvn -B -ntp verify -Dgpg.skip=true
+        run: mvn -B -ntp verify
 
       - name: Upload surefire reports on failure
         if: failure()

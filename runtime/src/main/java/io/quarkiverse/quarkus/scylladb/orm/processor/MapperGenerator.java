@@ -52,7 +52,11 @@ public class MapperGenerator {
         FieldSpec columnNamesField = generateColumnNamesConstant(entityType, processingEnv);
 
         TypeSpec.Builder mapperClass = TypeSpec.classBuilder(mapperClassName)
-                .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+                // Not final: a normal-scoped CDI bean needs a client proxy, and ArC can
+                // only subclass a final class because transform-unproxyable-classes
+                // rewrites the bytecode by default. Relying on that default would break
+                // the extension for anyone who turns it off.
+                .addModifiers(Modifier.PUBLIC)
                 .addAnnotation(ApplicationScoped.class)
                 .addAnnotation(ClassName.get("io.quarkus.runtime", "Startup"))
                 .addSuperinterface(ParameterizedTypeName.get(
