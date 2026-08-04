@@ -3,7 +3,9 @@ package io.quarkiverse.quarkus.scylladb.orm.processor.types;
 import static io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil.*;
 
 import java.util.List;
+import java.util.Locale;
 
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
@@ -14,6 +16,7 @@ import javax.lang.model.util.Types;
 
 import com.palantir.javapoet.ClassName;
 import com.palantir.javapoet.CodeBlock;
+import com.palantir.javapoet.FieldSpec;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Convert;
 import io.quarkiverse.quarkus.scylladb.orm.processor.TypeHandler;
@@ -34,28 +37,40 @@ public class ConverterTypeHandler implements TypeHandler {
         return field.getAnnotation(Convert.class) != null;
     }
 
+    /**
+     * Converters are stateless, so one instance per mapper is enough. Allocating one per
+     * field per row — which is what inlining {@code new Converter()} into map() and
+     * toProperties() does — is pure garbage on the hottest path.
+     */
+    @Override
+    public List<FieldSpec> generateSharedFields(VariableElement field) {
+        TypeMirror converterType = getConverterType(field);
+        ClassName converterClass = ClassName.bestGuess(converterType.toString());
+        return List.of(FieldSpec
+                .builder(converterClass, converterFieldName(converterType),
+                        Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .initializer("new $T()", converterClass)
+                .build());
+    }
+
     @Override
     public CodeBlock generateSetterCode(VariableElement field,
             String targetVar,
             String rowVar,
             String columnName) {
         TypeMirror converterType = getConverterType(field);
-        ClassName converterClass = ClassName.bestGuess(converterType.toString());
-        String converterVar = field.getSimpleName() + "Converter";
-
-        // Extract the CQL type from AttributeConverter<EntityType, CqlType>
         ClassName cqlTypeClass = extractCqlType(converterType);
+        String valueVar = field.getSimpleName() + "Raw";
 
-        return CodeBlock.of(
-                """
-                        $T $L = new $T();
-                        if ($L.get($S, $T.class) != null) \
-                        $L.$L($L.toEntityAttribute($L.get($S, $T.class)));
-                        """,
-                converterClass, converterVar, converterClass,
-                rowVar, columnName, cqlTypeClass,
-                targetVar, resolveSetterName(field),
-                converterVar, rowVar, columnName, cqlTypeClass);
+        // Read the column once — the previous version called row.get twice per field per
+        // row, once for the null check and once for the value.
+        return CodeBlock.builder()
+                .addStatement("$T $L = $L.get($S, $T.class)", cqlTypeClass, valueVar, rowVar, columnName, cqlTypeClass)
+                .beginControlFlow("if ($L != null)", valueVar)
+                .addStatement("$L.$L($L.toEntityAttribute($L))",
+                        targetVar, resolveSetterName(field), converterFieldName(converterType), valueVar)
+                .endControlFlow()
+                .build();
     }
 
     @Override
@@ -64,20 +79,29 @@ public class ConverterTypeHandler implements TypeHandler {
             String mapVar,
             String columnName) {
         TypeMirror converterType = getConverterType(field);
-        ClassName converterClass = ClassName.bestGuess(converterType.toString());
-        String converterVar = field.getSimpleName() + "Converter";
         String getter = resolveGetterName(field);
+        String valueVar = field.getSimpleName() + "Attr";
 
-        return CodeBlock.of(
-                """
-                        $T $L = new $T();
-                        if ($L.$L() != null) \
-                        $L.put($S, $L.toCqlColumn($L.$L()));
-                        """,
-                converterClass, converterVar, converterClass,
-                entityVar, getter,
-                mapVar, columnName,
-                converterVar, entityVar, getter);
+        return CodeBlock.builder()
+                .addStatement("var $L = $L.$L()", valueVar, entityVar, getter)
+                .beginControlFlow("if ($L != null)", valueVar)
+                .addStatement("$L.put($S, $L.toCqlColumn($L))",
+                        mapVar, columnName, converterFieldName(converterType), valueVar)
+                .endControlFlow()
+                .build();
+    }
+
+    /**
+     * Derived from the converter type, not the field, so two fields sharing a converter
+     * also share the constant.
+     */
+    private static String converterFieldName(TypeMirror converterType) {
+        String simpleName = converterType.toString();
+        int lastDot = simpleName.lastIndexOf('.');
+        if (lastDot >= 0) {
+            simpleName = simpleName.substring(lastDot + 1);
+        }
+        return simpleName.replace('.', '_').toUpperCase(Locale.ROOT);
     }
 
     private TypeMirror getConverterType(VariableElement field) {

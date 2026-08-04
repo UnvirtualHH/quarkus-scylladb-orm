@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,7 +47,7 @@ public class MapperGenerator {
         FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES", clusteringKeyFields(entityType, processingEnv));
         FieldSpec columnNamesField = generateColumnNamesConstant(entityType, processingEnv);
 
-        TypeSpec mapperClass = TypeSpec.classBuilder(mapperClassName)
+        TypeSpec.Builder mapperClass = TypeSpec.classBuilder(mapperClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                 .addAnnotation(ApplicationScoped.class)
                 .addAnnotation(ClassName.get("io.quarkus.runtime", "Startup"))
@@ -70,10 +71,23 @@ public class MapperGenerator {
                 .addMethod(getPkComponents)
                 .addMethod(getCkComponents)
                 .addMethod(getEntityTypeMethod)
-                .addMethod(registerSelfMethod)
-                .build();
+                .addMethod(registerSelfMethod);
 
-        JavaFile javaFile = JavaFile.builder(packageName, mapperClass).build();
+        // Constants contributed by type handlers (converter instances, cached enum
+        // values), so their generated code allocates once per mapper rather than once
+        // per field per row. Deduplicated by name: handlers derive the name from the
+        // converter/enum type, so fields sharing one also share the constant.
+        Map<String, FieldSpec> sharedFields = new LinkedHashMap<>();
+        for (VariableElement field : mappedFields(entityType, processingEnv)) {
+            TypeHandlerRegistry.findHandler(field, processingEnv.getTypeUtils(), processingEnv.getElementUtils())
+                    .ifPresent(handler -> handler.generateSharedFields(field)
+                            .forEach(spec -> sharedFields.putIfAbsent(spec.name(), spec)));
+        }
+        sharedFields.values().forEach(mapperClass::addField);
+
+        TypeSpec mapperClassSpec = mapperClass.build();
+
+        JavaFile javaFile = JavaFile.builder(packageName, mapperClassSpec).build();
 
         try {
             javaFile.writeTo(processingEnv.getFiler());
