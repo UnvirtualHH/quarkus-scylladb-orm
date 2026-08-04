@@ -13,6 +13,8 @@ import jakarta.inject.Inject;
 
 import com.palantir.javapoet.*;
 
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
+
 public class RepositoryGenerator {
 
     public void generateRepository(
@@ -66,7 +68,10 @@ public class RepositoryGenerator {
                 .superclass(ParameterizedTypeName.get(
                         ClassName.get("io.quarkiverse.quarkus.scylladb.orm.repository", "Repository"),
                         TypeName.get(entityType.asType()),
-                        ClassName.get(Object.class)));
+                        // The partition key's own type where there is exactly one, so
+                        // findById/deleteById/existsById are type-safe instead of
+                        // accepting any Object.
+                        EntityFields.idType(entityType, processingEnv)));
 
         List<MethodSpec> generatedMethods = QueryMethodFactory.buildQueryMethods(entityType, false, processingEnv);
         generatedMethods.forEach(repositoryClassBuilder::addMethod);

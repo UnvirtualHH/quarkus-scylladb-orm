@@ -23,6 +23,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import com.palantir.javapoet.*;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields.KeyField;
 
 public class MapperGenerator {
 
@@ -43,8 +45,10 @@ public class MapperGenerator {
         MethodSpec getColumnNamesArray = generateGetColumnNamesArray();
 
         // Static constant fields for key name arrays
-        FieldSpec pkNamesField = generateKeyNamesConstant("PK_NAMES", partitionKeyFields(entityType, processingEnv));
-        FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES", clusteringKeyFields(entityType, processingEnv));
+        FieldSpec pkNamesField = generateKeyNamesConstant("PK_NAMES",
+                EntityFields.partitionKeyFields(entityType, processingEnv));
+        FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES",
+                EntityFields.clusteringKeyFields(entityType, processingEnv));
         FieldSpec columnNamesField = generateColumnNamesConstant(entityType, processingEnv);
 
         TypeSpec.Builder mapperClass = TypeSpec.classBuilder(mapperClassName)
@@ -78,7 +82,7 @@ public class MapperGenerator {
         // per field per row. Deduplicated by name: handlers derive the name from the
         // converter/enum type, so fields sharing one also share the constant.
         Map<String, FieldSpec> sharedFields = new LinkedHashMap<>();
-        for (VariableElement field : mappedFields(entityType, processingEnv)) {
+        for (VariableElement field : EntityFields.mappedFields(entityType, processingEnv)) {
             TypeHandlerRegistry.findHandler(field, processingEnv.getTypeUtils(), processingEnv.getElementUtils())
                     .ifPresent(handler -> handler.generateSharedFields(field)
                             .forEach(spec -> sharedFields.putIfAbsent(spec.name(), spec)));
@@ -107,7 +111,7 @@ public class MapperGenerator {
                 .addStatement("$T instance = new $T()",
                         TypeName.get(entityType.asType()), TypeName.get(entityType.asType()));
 
-        for (VariableElement field : allFields(entityType, env)) {
+        for (VariableElement field : EntityFields.allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
@@ -170,7 +174,7 @@ public class MapperGenerator {
                 .addStatement("$T<String,Object> props = new $T<>()",
                         Map.class, java.util.LinkedHashMap.class);
 
-        for (VariableElement field : allFields(entityType, env)) {
+        for (VariableElement field : EntityFields.allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
@@ -223,7 +227,8 @@ public class MapperGenerator {
     }
 
     private MethodSpec generateGetKeyComponents(TypeElement entityType, boolean partition, ProcessingEnvironment env) {
-        var keys = partition ? partitionKeyFields(entityType, env) : clusteringKeyFields(entityType, env);
+        var keys = partition ? EntityFields.partitionKeyFields(entityType, env)
+                : EntityFields.clusteringKeyFields(entityType, env);
 
         var listType = ParameterizedTypeName.get(
                 ClassName.get(List.class),
@@ -279,7 +284,7 @@ public class MapperGenerator {
      * into an explicit projection so that reads never issue a wildcard select.
      */
     private FieldSpec generateColumnNamesConstant(TypeElement entityType, ProcessingEnvironment env) {
-        String literal = mappedFields(entityType, env).stream()
+        String literal = EntityFields.mappedFields(entityType, env).stream()
                 .map(f -> "\"" + resolveColumnName(f) + "\"")
                 .collect(Collectors.joining(", "));
         return FieldSpec.builder(String[].class, "COLUMN_NAMES", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
@@ -316,34 +321,6 @@ public class MapperGenerator {
 
     // === Helper ===
 
-    private static List<VariableElement> allFields(TypeElement type, ProcessingEnvironment env) {
-        List<VariableElement> fields = new ArrayList<>();
-        while (type != null) {
-            for (VariableElement field : ElementFilter.fieldsIn(type.getEnclosedElements())) {
-                if (!field.getModifiers().contains(Modifier.STATIC)) {
-                    fields.add(field);
-                }
-            }
-            var superType = type.getSuperclass();
-            if (superType == null || superType.toString().equals("java.lang.Object")) {
-                break;
-            }
-            type = (TypeElement) env.getTypeUtils().asElement(superType);
-        }
-        return fields;
-    }
-
-    /**
-     * The fields that participate in mapping — everything {@code map(Row)} and
-     * {@code toProperties(T)} iterate over, i.e. all non-static, non-{@code @Transient}
-     * fields including inherited ones.
-     */
-    private static List<VariableElement> mappedFields(TypeElement type, ProcessingEnvironment env) {
-        return allFields(type, env).stream()
-                .filter(f -> f.getAnnotation(Transient.class) == null)
-                .toList();
-    }
-
     private static String resolveColumnName(VariableElement field) {
         Column colAnn = field.getAnnotation(Column.class);
         if (colAnn != null && !colAnn.value().isEmpty()) {
@@ -378,22 +355,4 @@ public class MapperGenerator {
         };
     }
 
-    private record KeyField(VariableElement field, int ordinal) {
-    }
-
-    private static List<KeyField> partitionKeyFields(TypeElement entityType, ProcessingEnvironment env) {
-        return allFields(entityType, env).stream()
-                .filter(f -> f.getAnnotation(PartitionKey.class) != null)
-                .map(f -> new KeyField(f, f.getAnnotation(PartitionKey.class).ordinal()))
-                .sorted(Comparator.comparingInt(KeyField::ordinal))
-                .toList();
-    }
-
-    private static List<KeyField> clusteringKeyFields(TypeElement entityType, ProcessingEnvironment env) {
-        return allFields(entityType, env).stream()
-                .filter(f -> f.getAnnotation(ClusteringKey.class) != null)
-                .map(f -> new KeyField(f, f.getAnnotation(ClusteringKey.class).ordinal()))
-                .sorted(Comparator.comparingInt(KeyField::ordinal))
-                .toList();
-    }
 }
