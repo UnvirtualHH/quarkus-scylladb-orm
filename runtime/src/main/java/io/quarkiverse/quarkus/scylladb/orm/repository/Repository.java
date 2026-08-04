@@ -28,11 +28,18 @@ public abstract class Repository<T, ID> {
     protected final EntityMapper<T> mapper;
     protected final RepositoryRegistry registry;
 
+    /**
+     * The mapper's columns, pre-joined for use as an explicit projection. Built once
+     * because it goes into every generated read.
+     */
+    protected final String columnList;
+
     public Repository() {
         this.session = null;
         this.tableName = null;
         this.mapper = null;
         this.registry = null;
+        this.columnList = null;
     }
 
     public Repository(CqlSession session, String tableName, EntityMapper<T> mapper, RepositoryRegistry registry) {
@@ -40,6 +47,7 @@ public abstract class Repository<T, ID> {
         this.tableName = tableName;
         this.mapper = mapper;
         this.registry = registry;
+        this.columnList = mapper != null ? String.join(", ", mapper.getColumnNames()) : null;
     }
 
     protected abstract Class<T> getEntityType();
@@ -95,7 +103,7 @@ public abstract class Repository<T, ID> {
         if (pkNames.length != 1) {
             throw new IllegalStateException("findById requires exactly one partition key column.");
         }
-        String cql = String.format("SELECT * FROM %s WHERE %s = ?", tableName, pkNames[0]);
+        String cql = String.format("SELECT %s FROM %s WHERE %s = ?", columnList, tableName, pkNames[0]);
         ResultSet rs = doExecuteQuery(cql, id);
         Row row = rs.one();
         return row != null ? mapRow(row) : null;
@@ -114,7 +122,7 @@ public abstract class Repository<T, ID> {
             throw new IllegalArgumentException("Expected " + expected + " key parts, got " + keys.length);
         }
 
-        String cql = String.format("SELECT * FROM %s WHERE %s", tableName, where);
+        String cql = String.format("SELECT %s FROM %s WHERE %s", columnList, tableName, where);
         ResultSet rs = doExecuteQuery(cql, keys);
         Row row = rs.one();
         return row != null ? mapRow(row) : null;
@@ -127,7 +135,7 @@ public abstract class Repository<T, ID> {
      * partition-scoped {@code @Query} in production.
      */
     public List<T> findAll() {
-        String cql = "SELECT * FROM " + tableName;
+        String cql = "SELECT " + columnList + " FROM " + tableName;
         ResultSet rs = doExecuteQuery(cql);
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
@@ -136,7 +144,7 @@ public abstract class Repository<T, ID> {
 
     public List<T> findAll(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT * FROM %s %s LIMIT %d", tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s LIMIT %d", columnList, tableName, sortClause, pageable.size());
 
         ResultSet rs = doExecutePagedQuery(cql, pageable);
         return StreamSupport.stream(rs.spliterator(), false)
@@ -146,7 +154,7 @@ public abstract class Repository<T, ID> {
 
     public Paged<T> findAllPaged(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT * FROM %s %s LIMIT %d", tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s LIMIT %d", columnList, tableName, sortClause, pageable.size());
 
         ResultSet rs = doExecutePagedQuery(cql, pageable);
 

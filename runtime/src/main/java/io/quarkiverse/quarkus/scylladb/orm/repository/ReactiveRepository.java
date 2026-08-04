@@ -30,11 +30,18 @@ public abstract class ReactiveRepository<T, ID> {
     protected final EntityMapper<T> mapper;
     protected final ReactiveRepositoryRegistry registry;
 
+    /**
+     * The mapper's columns, pre-joined for use as an explicit projection. Built once
+     * because it goes into every generated read.
+     */
+    protected final String columnList;
+
     public ReactiveRepository() {
         this.session = null;
         this.tableName = null;
         this.mapper = null;
         this.registry = null;
+        this.columnList = null;
     }
 
     public ReactiveRepository(
@@ -46,6 +53,7 @@ public abstract class ReactiveRepository<T, ID> {
         this.tableName = tableName;
         this.mapper = mapper;
         this.registry = registry;
+        this.columnList = mapper != null ? String.join(", ", mapper.getColumnNames()) : null;
     }
 
     protected abstract Class<T> getEntityType();
@@ -90,7 +98,7 @@ public abstract class ReactiveRepository<T, ID> {
         if (pkNames.length != 1) {
             return Uni.createFrom().failure(new IllegalStateException("findById requires exactly one partition key."));
         }
-        String cql = String.format("SELECT * FROM %s WHERE %s = ?", tableName, pkNames[0]);
+        String cql = String.format("SELECT %s FROM %s WHERE %s = ?", columnList, tableName, pkNames[0]);
         return executeQueryForOne(cql, id);
     }
 
@@ -100,14 +108,14 @@ public abstract class ReactiveRepository<T, ID> {
      * {@link #findAll(Pageable, Sortable)} or a partition-scoped {@code @Query} in production.
      */
     public Multi<T> findAll() {
-        String cql = "SELECT * FROM " + tableName;
+        String cql = "SELECT " + columnList + " FROM " + tableName;
         return executeQueryForList(cql);
     }
 
     public Multi<T> findAll(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT * FROM %s %s LIMIT %d",
-                tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s LIMIT %d",
+                columnList, tableName, sortClause, pageable.size());
 
         return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable))
                 .onItem().transformToMulti(
@@ -117,8 +125,8 @@ public abstract class ReactiveRepository<T, ID> {
 
     public Uni<Paged<T>> findAllPaged(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT * FROM %s %s LIMIT %d",
-                tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s LIMIT %d",
+                columnList, tableName, sortClause, pageable.size());
 
         return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable))
                 .map(rs -> {
@@ -265,7 +273,7 @@ public abstract class ReactiveRepository<T, ID> {
                     "Expected " + expected + " key parts, got " + keys.length));
         }
 
-        String cql = String.format("SELECT * FROM %s WHERE %s", tableName, where);
+        String cql = String.format("SELECT %s FROM %s WHERE %s", columnList, tableName, where);
         return executeQueryForOne(cql, keys);
     }
 

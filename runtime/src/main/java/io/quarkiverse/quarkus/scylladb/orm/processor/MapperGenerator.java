@@ -39,10 +39,12 @@ public class MapperGenerator {
 
         MethodSpec getPkNamesArray = generateGetPartitionKeyNamesArray(entityType, processingEnv);
         MethodSpec getCkNamesArray = generateGetClusteringKeyNamesArray(entityType, processingEnv);
+        MethodSpec getColumnNamesArray = generateGetColumnNamesArray();
 
         // Static constant fields for key name arrays
         FieldSpec pkNamesField = generateKeyNamesConstant("PK_NAMES", partitionKeyFields(entityType, processingEnv));
         FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES", clusteringKeyFields(entityType, processingEnv));
+        FieldSpec columnNamesField = generateColumnNamesConstant(entityType, processingEnv);
 
         TypeSpec mapperClass = TypeSpec.classBuilder(mapperClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
@@ -59,8 +61,10 @@ public class MapperGenerator {
                         .build())
                 .addField(pkNamesField)
                 .addField(ckNamesField)
+                .addField(columnNamesField)
                 .addMethod(mapMethod)
                 .addMethod(toPropertiesMethod)
+                .addMethod(getColumnNamesArray)
                 .addMethod(getPkNamesArray)
                 .addMethod(getCkNamesArray)
                 .addMethod(getPkComponents)
@@ -256,6 +260,28 @@ public class MapperGenerator {
                 .build();
     }
 
+    /**
+     * Every column {@code map(Row)} reads, in the same order. Repositories join these
+     * into an explicit projection so that reads never issue a wildcard select.
+     */
+    private FieldSpec generateColumnNamesConstant(TypeElement entityType, ProcessingEnvironment env) {
+        String literal = mappedFields(entityType, env).stream()
+                .map(f -> "\"" + resolveColumnName(f) + "\"")
+                .collect(Collectors.joining(", "));
+        return FieldSpec.builder(String[].class, "COLUMN_NAMES", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .initializer(literal.isEmpty() ? "new String[0]" : "{" + literal + "}")
+                .build();
+    }
+
+    private MethodSpec generateGetColumnNamesArray() {
+        return MethodSpec.methodBuilder("getColumnNames")
+                .addAnnotation(Override.class)
+                .addModifiers(Modifier.PUBLIC)
+                .returns(String[].class)
+                .addStatement("return COLUMN_NAMES.clone()")
+                .build();
+    }
+
     private MethodSpec generateGetPartitionKeyNamesArray(TypeElement entityType, ProcessingEnvironment env) {
         MethodSpec.Builder b = MethodSpec.methodBuilder("getPartitionKeyNames")
                 .addAnnotation(Override.class)
@@ -291,6 +317,17 @@ public class MapperGenerator {
             type = (TypeElement) env.getTypeUtils().asElement(superType);
         }
         return fields;
+    }
+
+    /**
+     * The fields that participate in mapping — everything {@code map(Row)} and
+     * {@code toProperties(T)} iterate over, i.e. all non-static, non-{@code @Transient}
+     * fields including inherited ones.
+     */
+    private static List<VariableElement> mappedFields(TypeElement type, ProcessingEnvironment env) {
+        return allFields(type, env).stream()
+                .filter(f -> f.getAnnotation(Transient.class) == null)
+                .toList();
     }
 
     private static String resolveColumnName(VariableElement field) {
