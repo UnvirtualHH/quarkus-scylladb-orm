@@ -212,7 +212,7 @@ public class CqlSessionProducer {
         }
     }
 
-    private SSLContext buildSslContext(ScyllaOrmConfig.SslConfig sslConfig) {
+    static SSLContext buildSslContext(ScyllaOrmConfig.SslConfig sslConfig) {
         try {
             SSLContext sslContext = SSLContext.getInstance("TLS");
 
