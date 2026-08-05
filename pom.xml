@@ -44,7 +44,7 @@
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <quarkus.version>3.38.0</quarkus.version>
+        <quarkus.version>3.38.1</quarkus.version>
         <javapoet.version>0.18.0</javapoet.version>
         <!-- ScyllaDB shard-aware fork of the Java driver (API-compatible with the
              DataStax/Apache driver, same com.datastax.oss.driver.* packages). -->
