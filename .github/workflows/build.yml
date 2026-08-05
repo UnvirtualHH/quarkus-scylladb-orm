@@ -37,6 +37,11 @@ jobs:
       - name: Build and test
         run: mvn -B -ntp verify
 
+      # Its own step: a second ScyllaDB alongside the suite's plaintext one needs AIO
+      # capacity and takes minutes to come up, so it is excluded from the everyday build.
+      - name: TLS integration test
+        run: mvn -B -ntp verify -Dexcluded.test.groups= -Dtest=TlsConnectionTest -Dsurefire.failIfNoSpecifiedTests=false
+
       - name: Upload surefire reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
