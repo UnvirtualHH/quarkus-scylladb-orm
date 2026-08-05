@@ -12,7 +12,7 @@
     </parent>
     <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
     <artifactId>quarkus-scylladb-orm-parent</artifactId>
-    <version>1.0.10</version>
+    <version>1.0.11</version>
     <packaging>pom</packaging>
     <name>Quarkus ScyllaDB ORM - Parent</name>
 
@@ -44,11 +44,11 @@
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <quarkus.version>3.36.1</quarkus.version>
-        <javapoet.version>0.16.0</javapoet.version>
+        <quarkus.version>3.38.0</quarkus.version>
+        <javapoet.version>0.18.0</javapoet.version>
         <!-- ScyllaDB shard-aware fork of the Java driver (API-compatible with the
              DataStax/Apache driver, same com.datastax.oss.driver.* packages). -->
-        <scylla-driver.version>4.19.0.1</scylla-driver.version>
+        <scylla-driver.version>4.19.2.0</scylla-driver.version>
     </properties>
 
     <dependencyManagement>
@@ -128,11 +128,20 @@
     </build>
 
     <profiles>
-        <!-- Signing belongs to the release, not to every `mvn verify`. The
-             maven-release-plugin activates this profile via <releaseProfiles>. Leaving
-             the plugin bound unconditionally meant any build without a GPG key failed. -->
+        <!-- Signing belongs to the release, not to every `mvn verify`: bound
+             unconditionally, any build without a GPG key failed.
+             Activated by performRelease=true rather than only by <releaseProfiles>,
+             because that covers publishing directly from the command line as well —
+             relying on the release-plugin path alone produced an unsigned bundle that
+             Central rejected with "Missing signature for file". -->
         <profile>
             <id>release</id>
+            <activation>
+                <property>
+                    <name>performRelease</name>
+                    <value>true</value>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>
