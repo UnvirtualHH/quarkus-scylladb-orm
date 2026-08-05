@@ -135,17 +135,20 @@ class PersonRepositoryTest {
 
         assertNotNull(page1);
         assertEquals(1, page1.content().size());
+        // Unconditional: the table holds more than one row, so a follow-up page must
+        // exist. Guarding this behind a null check made the assertion vacuous while
+        // findAllPaged still capped the result set with a LIMIT and never returned a
+        // paging state.
+        assertTrue(page1.hasNextPage(), "expected a paging state while more rows remain");
 
-        if (page1.nextPagingState() != null) {
-            Pageable pageable2 = new Pageable(1, page1.nextPagingState());
-            Paged<Person> page2 = personRepository.findAllPaged(pageable2, null);
-            assertNotNull(page2);
-            assertFalse(page2.content().isEmpty());
+        Pageable pageable2 = new Pageable(1, page1.nextPagingState());
+        Paged<Person> page2 = personRepository.findAllPaged(pageable2, null);
+        assertNotNull(page2);
+        assertFalse(page2.content().isEmpty());
 
-            assertNotEquals(
-                    page1.content().get(0).getId(),
-                    page2.content().get(0).getId());
-        }
+        assertNotEquals(
+                page1.content().get(0).getId(),
+                page2.content().get(0).getId());
     }
 
     @Test

@@ -1,7 +1,6 @@
 package io.quarkiverse.quarkus.scylladb.orm.deployment;
 
 import io.quarkiverse.quarkus.scylladb.orm.config.ScyllaOrmConfig;
-import io.quarkiverse.quarkus.scylladb.orm.config.ScyllaOrmConfigBuilderCustomizer;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapperRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.processor.TypeHandlerRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.repository.ReactiveRepositoryRegistry;
@@ -11,14 +10,14 @@ import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
-import io.quarkus.deployment.builditem.RunTimeConfigBuilderBuildItem;
-import io.quarkus.deployment.builditem.StaticInitConfigBuilderBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.NativeImageResourcePatternsBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
-import io.quarkus.deployment.builditem.nativeimage.ServiceProviderBuildItem;
 import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
 import io.quarkus.maven.dependency.ResolvedDependency;
+
+import java.util.ArrayList;
+import java.util.List;
 
 class ScyllaDBOrmProcessor {
 
@@ -69,15 +68,14 @@ class ScyllaDBOrmProcessor {
                 .methods(true)
                 .fields(true)
                 .build());
-    }
-
-    @BuildStep
-    void registerConfigCustomizer(
-            BuildProducer<StaticInitConfigBuilderBuildItem> staticInitConfig,
-            BuildProducer<RunTimeConfigBuilderBuildItem> runTimeConfig) {
-        // Register config mapping for both static init and runtime phases
-        staticInitConfig.produce(new StaticInitConfigBuilderBuildItem(ScyllaOrmConfigBuilderCustomizer.class.getName()));
-        runTimeConfig.produce(new RunTimeConfigBuilderBuildItem(ScyllaOrmConfigBuilderCustomizer.class.getName()));
+        reflectiveClass.produce(ReflectiveClassBuildItem.builder(ScyllaOrmConfig.MetricsConfig.class)
+                .methods(true)
+                .fields(true)
+                .build());
+        reflectiveClass.produce(ReflectiveClassBuildItem.builder(ScyllaOrmConfig.ThrottlerConfig.class)
+                .methods(true)
+                .fields(true)
+                .build());
     }
 
     // --- Native image support build steps ---
@@ -173,7 +171,7 @@ class ScyllaDBOrmProcessor {
         // classes (CMSObjectIdentifiers, ContentInfo) because they are not
         // needed for the Cassandra driver and can cause unresolved field errors
         // when different BouncyCastle artifact versions coexist on the classpath.
-        if (hasRuntimeDependency(curateOutcome, "org.bouncycastle")) {
+        if (hasRuntimeDependency(runtimeGroupIds(curateOutcome), "org.bouncycastle")) {
             registerIfPresent(runtimeInit, "org.bouncycastle.jsse.provider.BouncyCastleJsseProvider");
         }
 
@@ -202,20 +200,31 @@ class ScyllaDBOrmProcessor {
         // GraalVM disallows in the image heap. Only register when Apache HTTP Client
         // is an actual runtime dependency (not just on the build-time classpath from
         // deployment modules), otherwise GraalVM throws ClassNotFoundException.
-        if (hasRuntimeDependency(curateOutcome, "org.apache.httpcomponents")) {
+        if (hasRuntimeDependency(runtimeGroupIds(curateOutcome), "org.apache.httpcomponents")) {
             registerIfPresent(runtimeInit, "org.apache.http.impl.auth.NTLMEngineImpl");
         }
     }
 
-    // Checks whether any RUNTIME dependency in the resolved application model
-    // matches the given groupId prefix. This ensures we only register classes
-    // for runtime initialization when they are actually on the native-image
-    // classpath, avoiding ClassNotFoundException during GraalVM compilation.
-    private static boolean hasRuntimeDependency(
-            CurateOutcomeBuildItem curateOutcome,
-            String groupIdPrefix) {
+    private static List<String> runtimeGroupIds(CurateOutcomeBuildItem curateOutcome) {
+        List<String> groupIds = new ArrayList<>();
         for (ResolvedDependency dep : curateOutcome.getApplicationModel().getRuntimeDependencies()) {
-            if (dep.getGroupId().startsWith(groupIdPrefix)) {
+            groupIds.add(dep.getGroupId());
+        }
+        return groupIds;
+    }
+
+    /**
+     * Whether any RUNTIME dependency matches the given groupId prefix, so that classes
+     * are only registered for runtime initialization when they are actually on the
+     * native-image classpath — otherwise GraalVM fails with ClassNotFoundException.
+     * <p>
+     * Takes the group ids rather than the build item so the decision is a pure function
+     * and can be tested; the build steps around it only run during a native build and
+     * are therefore unreachable from a JVM-mode test.
+     */
+    static boolean hasRuntimeDependency(List<String> runtimeGroupIds, String groupIdPrefix) {
+        for (String groupId : runtimeGroupIds) {
+            if (groupId.startsWith(groupIdPrefix)) {
                 return true;
             }
         }
@@ -228,20 +237,19 @@ class ScyllaDBOrmProcessor {
     private static void registerIfPresent(
             BuildProducer<RuntimeInitializedClassBuildItem> runtimeInit,
             String className) {
-        try {
-            Thread.currentThread().getContextClassLoader().loadClass(className);
+        if (isOnClasspath(className)) {
             runtimeInit.produce(new RuntimeInitializedClassBuildItem(className));
-        } catch (ClassNotFoundException ignored) {
-            // Class not on classpath, skip runtime init registration
         }
     }
 
-    @BuildStep
-    void registerServiceProviders(
-            BuildProducer<ServiceProviderBuildItem> serviceProviders) {
-        // Register the Cassandra driver's default session factory for ServiceLoader
-        serviceProviders.produce(new ServiceProviderBuildItem(
-                "com.datastax.oss.driver.api.core.session.SessionBuilder",
-                "com.datastax.oss.driver.internal.core.session.DefaultSession"));
+    /** Split out from {@link #registerIfPresent} so the guard itself is testable. */
+    static boolean isOnClasspath(String className) {
+        try {
+            Thread.currentThread().getContextClassLoader().loadClass(className);
+            return true;
+        } catch (ClassNotFoundException | LinkageError ignored) {
+            return false;
+        }
     }
+
 }

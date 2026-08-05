@@ -35,6 +35,18 @@ public interface EntityMapper<T> {
      */
     Class<T> getEntityType();
 
+    /**
+     * Returns every column this mapper reads in {@link #map(Row)}, in declaration order.
+     * <p>
+     * Repositories use this to build an explicit projection instead of {@code SELECT *}.
+     * A wildcard select makes the driver warn about prepared-statement invalidation on
+     * CQL4 (risking broken deserialization) and forces it to request result metadata on
+     * every execution, which costs throughput on the hot path.
+     *
+     * @return the mapped column names; the array is a defensive copy.
+     */
+    String[] getColumnNames();
+
     String[] getPartitionKeyNames();
 
     String[] getClusteringKeyNames();

@@ -11,7 +11,10 @@ public @interface GeneratedValue {
     Strategy strategy() default Strategy.UUID;
 
     enum Strategy {
-        UUID,
-        SEQUENCE
+        /** A random UUID is assigned on write when the field is still null. */
+        UUID
+        // SEQUENCE was declared here but never implemented - it was silently ignored,
+        // so an entity using it got no generated value at all. Cassandra has no
+        // sequences; use UUID, or assign the value yourself.
     }
 }

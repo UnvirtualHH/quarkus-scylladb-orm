@@ -117,9 +117,9 @@ public class PersonReactiveService {
 |------------|-------------|
 | `@Table("name")` | Maps class to a table |
 | `@PartitionKey` | Marks field as partition key (use `ordinal` for composite keys) |
-| `@ClusteringKey` | Marks field as clustering key (supports `ordinal` and `order`) |
+| `@ClusteringKey` | Marks field as clustering key (use `ordinal` for composite keys) |
 | `@Column("name")` | Maps field to column (optional, defaults to field name) |
-| `@GeneratedValue` | Auto-generates values (UUID or SEQUENCE) |
+| `@GeneratedValue` | Assigns a random UUID on write when the field is null |
 | `@Transient` | Excludes field from persistence |
 | `@Enumerated` | Enum handling (STRING or ORDINAL) |
 | `@Convert` | Custom type conversion |
@@ -137,7 +137,7 @@ public class SensorData {
     @PartitionKey(ordinal = 1)
     private String region;
 
-    @ClusteringKey(ordinal = 0, order = ClusteringOrder.DESC)
+    @ClusteringKey(ordinal = 0)
     private Instant timestamp;
 
     @Column
@@ -526,6 +526,58 @@ tombstones in ScyllaDB), but it also means setting a field to `null` does **not*
 stored value — the column is left untouched. To actively clear a column, issue an explicit
 `UPDATE ... SET col = null` (or `DELETE col`) via `@Query`.
 
+### Upgrading to 1.1.0
+
+Behaviour changes that need no action:
+
+- Built-in reads select an explicit column list instead of `SELECT *`. This removes the
+  driver's prepared-statement-invalidation warning and the per-execution metadata
+  overhead it forces. Your own `@Query` CQL is untouched — prefer explicit columns there
+  too.
+- `save()`/`update()` bind a fixed column set and leave null fields *unset*. Semantics are
+  unchanged (no tombstones, a null still does not clear a column), but an entity now uses
+  one prepared statement instead of up to one per null-pattern.
+- `findAllPaged()`/`queryPaged()` **actually paginate now**. They previously appended a
+  `LIMIT`, which caps the whole result set, so the server returned no paging state and
+  `hasNextPage()` was always `false`. If you worked around this, remove the workaround.
+
+Source-incompatible changes:
+
+| Change | Migration |
+|--------|-----------|
+| Repositories are typed on their partition key (`Repository<Person, UUID>` instead of `Repository<Person, Object>`) | Fix any call passing a wrongly typed id — it was silently failing at runtime before. Entities with a composite partition key keep `Object`; use `findByKeys`. |
+| `Paged` no longer has `totalElements` | It was hard-coded to `-1` on every path. Use `count()` if you really need a total. |
+| `query`/`querySingle`/`queryScalar`/`execute`/`queryProjection` lost their 1/2/3-argument overloads | The varargs overload covers them; no call site should need changing. |
+| `EntityMapper` gained `getColumnNames()` | Only affects hand-written mappers; generated ones are regenerated. |
+| `GeneratedValue.Strategy.SEQUENCE` removed | It was never implemented and silently did nothing. Use `UUID` or assign the value yourself. |
+
+### Select lists and the entity mapper
+The generated mapper reads **every** mapped field of the entity, so any query that maps
+rows back to the entity has to select all of its columns.
+
+For `@Query` this is handled at build time:
+
+- `SELECT *` is expanded to the explicit column list. That avoids the driver's wildcard
+  select warning (prepared-statement invalidation on CQL4, plus result metadata on every
+  execution) at no cost to you.
+- An explicit list that misses entity columns is a **compile error** naming the missing
+  columns — it used to compile and then fail at runtime.
+- Projections (`resultClass = MyDto.class`) are left alone; they map only the DTO's own
+  fields, so a partial select is exactly right there.
+- Select lists using functions or aliases (`writetime(x)`, `x AS y`) are left alone —
+  guessing there would turn working queries into build failures.
+
+**Runtime CQL is not covered.** `repository.query(cql, ...)` and friends receive the
+string at runtime, so nothing can check or rewrite it. There, selecting a subset still
+fails with `IllegalArgumentException: <column> is not a column in this row`, and
+`SELECT *` still triggers the driver warning. Prefer `@Query`, or spell the columns out.
+
+### Blocking repositories refuse to run on the event loop
+Every method of the generated blocking repository blocks. Called from a Vert.x event loop
+thread it now fails fast with `BlockingOperationNotAllowedException` instead of stalling
+the loop — inject the reactive repository, or annotate the caller with
+`@io.smallrye.common.annotation.Blocking` so Quarkus dispatches it to a worker thread.
+
 ### Avoid unbounded scans on hot paths
 `findAll()` (no paging) and `count()` perform cluster-wide scans that will time out and
 overload coordinators on large tables. Use `findAll(Pageable, Sortable)`, partition-scoped
@@ -561,23 +613,34 @@ for operating at sustained write volume. Consider a request throttler
 
 The extension handles common Java types automatically:
 - `UUID`, `String`, `Integer`, `Long`, `Double`, `Float`, `Boolean`
-- `Instant`, `LocalDate`, `LocalDateTime`, `LocalTime`
+- `Instant`, `LocalDate`, `LocalTime`
 - `BigDecimal`, `BigInteger`
-- `byte[]`, `ByteBuffer`
+- `ByteBuffer`, `byte[]`
 - Collections: `List`, `Set`, `Map`
+- Enums via `@Enumerated(EnumType.STRING)` / `@Enumerated(EnumType.ORDINAL)`
+
+**Not supported** — the driver has no codec for these, and a field of such a type
+fails at runtime with `CodecNotFoundException`:
+
+| Type | Use instead |
+|------|-------------|
+| `LocalDateTime` | `Instant` (a `LocalDateTime` has no time zone, so the conversion would be ambiguous), or an explicit `@Convert` |
 
 ### Custom Converters
+
+Implement `AttributeConverter<EntityType, CqlType>`. The converter needs a public
+no-argument constructor.
 
 ```java
 public class JsonConverter implements AttributeConverter<MyObject, String> {
 
     @Override
-    public String convertToDatabaseColumn(MyObject attribute) {
+    public String toCqlColumn(MyObject attribute) {
         return objectMapper.writeValueAsString(attribute);
     }
 
     @Override
-    public MyObject convertToEntityAttribute(String dbData) {
+    public MyObject toEntityAttribute(String dbData) {
         return objectMapper.readValue(dbData, MyObject.class);
     }
 }

@@ -13,6 +13,10 @@
 
     <properties>
         <skipITs>true</skipITs>
+        <!-- Starting a second, TLS-enabled ScyllaDB next to the suite's plaintext one
+             takes minutes on a contended Docker VM. Excluded here so the everyday build
+             stays fast; CI clears this property in a dedicated job. -->
+        <excluded.test.groups>tls</excluded.test.groups>
     </properties>
 
     <dependencies>
@@ -79,6 +83,13 @@
                             <version>${project.version}</version>
                         </path>
                     </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${excluded.test.groups}</excludedGroups>
                 </configuration>
             </plugin>
 

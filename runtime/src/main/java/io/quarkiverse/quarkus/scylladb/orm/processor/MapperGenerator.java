@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -22,6 +23,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import com.palantir.javapoet.*;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields.KeyField;
 
 public class MapperGenerator {
 
@@ -39,13 +42,21 @@ public class MapperGenerator {
 
         MethodSpec getPkNamesArray = generateGetPartitionKeyNamesArray(entityType, processingEnv);
         MethodSpec getCkNamesArray = generateGetClusteringKeyNamesArray(entityType, processingEnv);
+        MethodSpec getColumnNamesArray = generateGetColumnNamesArray();
 
         // Static constant fields for key name arrays
-        FieldSpec pkNamesField = generateKeyNamesConstant("PK_NAMES", partitionKeyFields(entityType, processingEnv));
-        FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES", clusteringKeyFields(entityType, processingEnv));
+        FieldSpec pkNamesField = generateKeyNamesConstant("PK_NAMES",
+                EntityFields.partitionKeyFields(entityType, processingEnv));
+        FieldSpec ckNamesField = generateKeyNamesConstant("CK_NAMES",
+                EntityFields.clusteringKeyFields(entityType, processingEnv));
+        FieldSpec columnNamesField = generateColumnNamesConstant(entityType, processingEnv);
 
-        TypeSpec mapperClass = TypeSpec.classBuilder(mapperClassName)
-                .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+        TypeSpec.Builder mapperClass = TypeSpec.classBuilder(mapperClassName)
+                // Not final: a normal-scoped CDI bean needs a client proxy, and ArC can
+                // only subclass a final class because transform-unproxyable-classes
+                // rewrites the bytecode by default. Relying on that default would break
+                // the extension for anyone who turns it off.
+                .addModifiers(Modifier.PUBLIC)
                 .addAnnotation(ApplicationScoped.class)
                 .addAnnotation(ClassName.get("io.quarkus.runtime", "Startup"))
                 .addSuperinterface(ParameterizedTypeName.get(
@@ -59,17 +70,32 @@ public class MapperGenerator {
                         .build())
                 .addField(pkNamesField)
                 .addField(ckNamesField)
+                .addField(columnNamesField)
                 .addMethod(mapMethod)
                 .addMethod(toPropertiesMethod)
+                .addMethod(getColumnNamesArray)
                 .addMethod(getPkNamesArray)
                 .addMethod(getCkNamesArray)
                 .addMethod(getPkComponents)
                 .addMethod(getCkComponents)
                 .addMethod(getEntityTypeMethod)
-                .addMethod(registerSelfMethod)
-                .build();
+                .addMethod(registerSelfMethod);
 
-        JavaFile javaFile = JavaFile.builder(packageName, mapperClass).build();
+        // Constants contributed by type handlers (converter instances, cached enum
+        // values), so their generated code allocates once per mapper rather than once
+        // per field per row. Deduplicated by name: handlers derive the name from the
+        // converter/enum type, so fields sharing one also share the constant.
+        Map<String, FieldSpec> sharedFields = new LinkedHashMap<>();
+        for (VariableElement field : EntityFields.mappedFields(entityType, processingEnv)) {
+            TypeHandlerRegistry.findHandler(field, processingEnv.getTypeUtils(), processingEnv.getElementUtils())
+                    .ifPresent(handler -> handler.generateSharedFields(field)
+                            .forEach(spec -> sharedFields.putIfAbsent(spec.name(), spec)));
+        }
+        sharedFields.values().forEach(mapperClass::addField);
+
+        TypeSpec mapperClassSpec = mapperClass.build();
+
+        JavaFile javaFile = JavaFile.builder(packageName, mapperClassSpec).build();
 
         try {
             javaFile.writeTo(processingEnv.getFiler());
@@ -89,11 +115,11 @@ public class MapperGenerator {
                 .addStatement("$T instance = new $T()",
                         TypeName.get(entityType.asType()), TypeName.get(entityType.asType()));
 
-        for (VariableElement field : allFields(entityType, env)) {
+        for (VariableElement field : EntityFields.allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
-            String colName = resolveColumnName(field);
+            String colName = EntityFields.resolveColumnName(field);
             String typeString = field.asType().toString();
             Optional<TypeHandler> handler = TypeHandlerRegistry.findHandler(field,
                     env.getTypeUtils(), env.getElementUtils());
@@ -152,11 +178,11 @@ public class MapperGenerator {
                 .addStatement("$T<String,Object> props = new $T<>()",
                         Map.class, java.util.LinkedHashMap.class);
 
-        for (VariableElement field : allFields(entityType, env)) {
+        for (VariableElement field : EntityFields.allFields(entityType, env)) {
             if (field.getAnnotation(Transient.class) != null)
                 continue;
 
-            String colName = resolveColumnName(field);
+            String colName = EntityFields.resolveColumnName(field);
             Optional<TypeHandler> handler = TypeHandlerRegistry.findHandler(field,
                     env.getTypeUtils(), env.getElementUtils());
 
@@ -205,7 +231,8 @@ public class MapperGenerator {
     }
 
     private MethodSpec generateGetKeyComponents(TypeElement entityType, boolean partition, ProcessingEnvironment env) {
-        var keys = partition ? partitionKeyFields(entityType, env) : clusteringKeyFields(entityType, env);
+        var keys = partition ? EntityFields.partitionKeyFields(entityType, env)
+                : EntityFields.clusteringKeyFields(entityType, env);
 
         var listType = ParameterizedTypeName.get(
                 ClassName.get(List.class),
@@ -227,7 +254,7 @@ public class MapperGenerator {
         // Keys are already sorted by ordinal at compile time via partitionKeyFields/clusteringKeyFields
         for (KeyField key : keys) {
             var f = key.field();
-            String colName = resolveColumnName(f);
+            String colName = EntityFields.resolveColumnName(f);
             TypeName boxed = TypeName.get(f.asType()).box();
             b.addStatement("list.add($T.of($S, $T.of($T.class), entity.$L(), $L))",
                     ClassName.get("io.quarkiverse.quarkus.scylladb.orm.mapping", "KeyComponent"),
@@ -249,10 +276,32 @@ public class MapperGenerator {
                     .build();
         }
         String literal = keys.stream()
-                .map(k -> "\"" + resolveColumnName(k.field()) + "\"")
+                .map(k -> "\"" + EntityFields.resolveColumnName(k.field()) + "\"")
                 .collect(Collectors.joining(", "));
         return FieldSpec.builder(String[].class, fieldName, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
                 .initializer("{$L}", literal)
+                .build();
+    }
+
+    /**
+     * Every column {@code map(Row)} reads, in the same order. Repositories join these
+     * into an explicit projection so that reads never issue a wildcard select.
+     */
+    private FieldSpec generateColumnNamesConstant(TypeElement entityType, ProcessingEnvironment env) {
+        String literal = EntityFields.mappedFields(entityType, env).stream()
+                .map(f -> "\"" + EntityFields.resolveColumnName(f) + "\"")
+                .collect(Collectors.joining(", "));
+        return FieldSpec.builder(String[].class, "COLUMN_NAMES", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .initializer(literal.isEmpty() ? "new String[0]" : "{" + literal + "}")
+                .build();
+    }
+
+    private MethodSpec generateGetColumnNamesArray() {
+        return MethodSpec.methodBuilder("getColumnNames")
+                .addAnnotation(Override.class)
+                .addModifiers(Modifier.PUBLIC)
+                .returns(String[].class)
+                .addStatement("return COLUMN_NAMES.clone()")
                 .build();
     }
 
@@ -275,31 +324,6 @@ public class MapperGenerator {
     }
 
     // === Helper ===
-
-    private static List<VariableElement> allFields(TypeElement type, ProcessingEnvironment env) {
-        List<VariableElement> fields = new ArrayList<>();
-        while (type != null) {
-            for (VariableElement field : ElementFilter.fieldsIn(type.getEnclosedElements())) {
-                if (!field.getModifiers().contains(Modifier.STATIC)) {
-                    fields.add(field);
-                }
-            }
-            var superType = type.getSuperclass();
-            if (superType == null || superType.toString().equals("java.lang.Object")) {
-                break;
-            }
-            type = (TypeElement) env.getTypeUtils().asElement(superType);
-        }
-        return fields;
-    }
-
-    private static String resolveColumnName(VariableElement field) {
-        Column colAnn = field.getAnnotation(Column.class);
-        if (colAnn != null && !colAnn.value().isEmpty()) {
-            return colAnn.value();
-        }
-        return field.getSimpleName().toString();
-    }
 
     private static String getterName(VariableElement field) {
         String name = capitalize(field.getSimpleName().toString());
@@ -327,22 +351,4 @@ public class MapperGenerator {
         };
     }
 
-    private record KeyField(VariableElement field, int ordinal) {
-    }
-
-    private static List<KeyField> partitionKeyFields(TypeElement entityType, ProcessingEnvironment env) {
-        return allFields(entityType, env).stream()
-                .filter(f -> f.getAnnotation(PartitionKey.class) != null)
-                .map(f -> new KeyField(f, f.getAnnotation(PartitionKey.class).ordinal()))
-                .sorted(Comparator.comparingInt(KeyField::ordinal))
-                .toList();
-    }
-
-    private static List<KeyField> clusteringKeyFields(TypeElement entityType, ProcessingEnvironment env) {
-        return allFields(entityType, env).stream()
-                .filter(f -> f.getAnnotation(ClusteringKey.class) != null)
-                .map(f -> new KeyField(f, f.getAnnotation(ClusteringKey.class).ordinal()))
-                .sorted(Comparator.comparingInt(KeyField::ordinal))
-                .toList();
-    }
 }

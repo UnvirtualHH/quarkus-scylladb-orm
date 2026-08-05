@@ -7,6 +7,7 @@ import javax.lang.model.element.VariableElement;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 
+import io.quarkiverse.quarkus.scylladb.orm.processor.types.ByteArrayTypeHandler;
 import io.quarkiverse.quarkus.scylladb.orm.processor.types.ConverterTypeHandler;
 import io.quarkiverse.quarkus.scylladb.orm.processor.types.EnumTypeHandler;
 
@@ -16,9 +17,12 @@ import io.quarkiverse.quarkus.scylladb.orm.processor.types.EnumTypeHandler;
  */
 public final class TypeHandlerRegistry {
 
+    // Order matters: the annotation-driven handlers come first so that an explicit
+    // @Enumerated / @Convert always wins over the type-driven ones.
     private static final List<TypeHandler> HANDLERS = List.of(
             new EnumTypeHandler(),
-            new ConverterTypeHandler());
+            new ConverterTypeHandler(),
+            new ByteArrayTypeHandler());
 
     private TypeHandlerRegistry() {
         // Utility class - prevent instantiation

@@ -1,0 +1,53 @@
+name: Native build
+
+# The native image path is deliberately kept in its own workflow: it is slow
+# (~15-25 min) and its failures are independent of the JVM build. It runs on
+# main and on demand, not on every pull request.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    # Weekly, so that GraalVM / driver / Netty regressions surface even when the
+    # extension itself has not changed.
+    - cron: '0 4 * * 1'
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native image build + integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # container-build lets Quarkus pull its own matching Mandrel builder image
+      # instead of relying on a GraalVM installed on the runner. Slower, but it
+      # pins the toolchain to whatever the Quarkus version expects.
+      - name: Build native image and run integration tests
+        run: |
+          mvn -B -ntp verify \
+            -Dnative \
+            -Dquarkus.native.container-build=true
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-build-reports
+          path: |
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+            **/target/*-native-image-source-jar/**
+          retention-days: 7

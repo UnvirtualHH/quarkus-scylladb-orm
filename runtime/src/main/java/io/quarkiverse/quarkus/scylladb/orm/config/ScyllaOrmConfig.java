@@ -3,9 +3,19 @@ package io.quarkiverse.quarkus.scylladb.orm.config;
 import java.time.Duration;
 import java.util.Optional;
 
+import io.quarkus.runtime.annotations.ConfigPhase;
+import io.quarkus.runtime.annotations.ConfigRoot;
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 
+/**
+ * A {@link ConfigRoot}, not just a {@link ConfigMapping}: registering the mapping through
+ * a custom {@code ConfigBuilder} made the values resolve but left Quarkus unaware that
+ * the keys exist, so every application using this extension logged a wall of
+ * "Unrecognized configuration key quarkus.scylla.*" warnings at startup — and the keys
+ * showed up in neither the config documentation nor the Dev UI.
+ */
+@ConfigRoot(phase = ConfigPhase.RUN_TIME)
 @ConfigMapping(prefix = "quarkus.scylla")
 public interface ScyllaOrmConfig {
 

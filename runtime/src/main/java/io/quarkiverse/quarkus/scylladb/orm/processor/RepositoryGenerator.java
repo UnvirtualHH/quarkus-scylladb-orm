@@ -13,6 +13,8 @@ import jakarta.inject.Inject;
 
 import com.palantir.javapoet.*;
 
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
+
 public class RepositoryGenerator {
 
     public void generateRepository(
@@ -26,9 +28,11 @@ public class RepositoryGenerator {
 
         String fullClassName = packageName + "." + repositoryClassName;
 
+        // Protected, not public: it exists only so CDI can build a client proxy, and
+        // an instance created through it has no session and would NPE on every call.
         MethodSpec noArgsConstructor = MethodSpec.constructorBuilder()
                 .addStatement("super()")
-                .addModifiers(Modifier.PUBLIC)
+                .addModifiers(Modifier.PROTECTED)
                 .build();
 
         MethodSpec constructor = MethodSpec.constructorBuilder()
@@ -66,7 +70,10 @@ public class RepositoryGenerator {
                 .superclass(ParameterizedTypeName.get(
                         ClassName.get("io.quarkiverse.quarkus.scylladb.orm.repository", "Repository"),
                         TypeName.get(entityType.asType()),
-                        ClassName.get(Object.class)));
+                        // The partition key's own type where there is exactly one, so
+                        // findById/deleteById/existsById are type-safe instead of
+                        // accepting any Object.
+                        EntityFields.idType(entityType, processingEnv)));
 
         List<MethodSpec> generatedMethods = QueryMethodFactory.buildQueryMethods(entityType, false, processingEnv);
         generatedMethods.forEach(repositoryClassBuilder::addMethod);

@@ -5,6 +5,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.annotation.processing.ProcessingEnvironment;
+import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
@@ -17,6 +18,7 @@ import com.palantir.javapoet.*;
 import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil;
 
 /**
@@ -31,14 +33,21 @@ final class QueryMethodFactory {
     private static final Pattern COLUMN_PATTERN = Pattern.compile("(\\w+)\\s*(=|<|>|<=|>=|IN)\\s*\\?");
     private static final Pattern LIMIT_ONE_PATTERN = Pattern.compile("\\bLIMIT\\s+1\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern SELECT_PATTERN = Pattern.compile("^\\s*SELECT\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern WRITE_PATTERN = Pattern.compile("\\b(INSERT|UPDATE|DELETE|TRUNCATE)\\b",
+    // Anchored to the leading keyword, like SCHEMA_OR_TRUNCATE_LEADING below: a CQL
+    // statement's verb is always first, so an unanchored search would misclassify a
+    // statement that merely mentions the word in a string literal or identifier.
+    private static final Pattern WRITE_PATTERN = Pattern.compile("^\\s*(INSERT|UPDATE|DELETE|TRUNCATE)\\b",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern SCHEMA_PATTERN = Pattern.compile("\\b(CREATE|ALTER|DROP)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SCHEMA_PATTERN = Pattern.compile("^\\s*(CREATE|ALTER|DROP)\\b",
+            Pattern.CASE_INSENSITIVE);
     // Schema-altering / TRUNCATE statements always begin with the verb, so anchor the
     // guard to the leading keyword. This avoids false positives on string literals or
     // identifiers that merely contain these words (e.g. WHERE action = 'DROP').
     private static final Pattern SCHEMA_OR_TRUNCATE_LEADING = Pattern.compile(
             "^\\s*(CREATE|ALTER|DROP|TRUNCATE)\\b", Pattern.CASE_INSENSITIVE);
+
+    /** Name of the local variable the generated method body holds the CQL in. */
+    static final String QUERY_LOCAL_VARIABLE = "query";
 
     // Structural parameters that should be interpolated, not bound
     private static final Set<String> STRUCTURAL_PARAMS = Set.of("limit", "order", "orderby", "sort", "offset");
@@ -47,11 +56,20 @@ final class QueryMethodFactory {
     private static final ClassName MUTINY_UNI = ClassName.get("io.smallrye.mutiny", "Uni");
     private static final ClassName MUTINY_MULTI = ClassName.get("io.smallrye.mutiny", "Multi");
 
+    /**
+     * The generated guard calls {@code String.matches(...)}, which compiles the pattern
+     * from scratch and therefore drops any flags the {@link Pattern} constant was built
+     * with. Inline flags survive that trip; a plain {@code Pattern.CASE_INSENSITIVE} did
+     * not, which made the emitted check stricter than the one written here.
+     */
+    private static String patternForGeneratedMatches(Pattern pattern) {
+        boolean caseInsensitive = (pattern.flags() & Pattern.CASE_INSENSITIVE) != 0;
+        return caseInsensitive ? "(?i)" + pattern.pattern() : pattern.pattern();
+    }
+
     // Allowed values for structural parameters (SQL injection prevention)
     private static final Pattern SAFE_ORDER_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*\\s+(ASC|DESC)$",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern SAFE_COLUMN_PATTERN = Pattern
-            .compile("^[A-Za-z_][A-Za-z0-9_]*(,\\s*[A-Za-z_][A-Za-z0-9_]*)*$");
     private static final Pattern SAFE_INTEGER_PATTERN = Pattern.compile("^\\d+$");
 
     private QueryMethodFactory() {
@@ -131,6 +149,20 @@ final class QueryMethodFactory {
             returnType = ReturnType.SINGLE;
         }
 
+        // --- Projection support: check for resultClass ---
+        TypeMirror resultClassMirror = getResultClassMirror(q);
+        boolean isProjection = resultClassMirror != null
+                && resultClassMirror.getKind() != TypeKind.VOID;
+
+        // Rows of a non-projection SELECT go through the entity mapper, which reads every
+        // mapped column — so the select list has to cover them. Checked here rather than
+        // left to fail at runtime.
+        boolean mapsRowsToEntity = !isProjection
+                && (returnType == ReturnType.LIST || returnType == ReturnType.SINGLE);
+        if (mapsRowsToEntity && isSelect(cql)) {
+            cql = alignSelectListWithEntityColumns(cql, EntityFields.mappedColumnNames(entityType, env), methodName);
+        }
+
         // Extract and classify parameters
         List<String> paramNames = extractParamNames(cql);
         List<String> structuralParams = new ArrayList<>();
@@ -170,11 +202,11 @@ final class QueryMethodFactory {
                 addStructuralParamValidation(mb, sp);
             }
 
-            mb.addStatement("String query = String.format($S, $L)",
+            mb.addStatement("String " + QUERY_LOCAL_VARIABLE + " = String.format($S, $L)",
                     processedCql,
                     String.join(", ", structuralParams));
         } else {
-            mb.addStatement("String query = $S", processedCql);
+            mb.addStatement("String " + QUERY_LOCAL_VARIABLE + " = $S", processedCql);
         }
 
         List<String> bindableParamExpressions = new ArrayList<>(bindableParams.size());
@@ -186,11 +218,6 @@ final class QueryMethodFactory {
                 bindableParamExpressions.add(p);
             }
         }
-
-        // --- Projection support: check for resultClass ---
-        TypeMirror resultClassMirror = getResultClassMirror(q);
-        boolean isProjection = resultClassMirror != null
-                && resultClassMirror.getKind() != TypeKind.VOID;
 
         if (isProjection) {
             return buildProjectionMethod(reactive, mb, returnType, resultClassMirror,
@@ -224,13 +251,28 @@ final class QueryMethodFactory {
     // Validation for SQL Injection Prevention
     // --------------------------------------------------
 
+    /**
+     * Emits the guard for a structural parameter.
+     * <p>
+     * Structural parameters are interpolated into the CQL rather than bound, so this
+     * validation is the only thing between the caller's string and the statement. It runs
+     * before the value reaches {@link String#format}.
+     */
     private static void addStructuralParamValidation(MethodSpec.Builder mb, String paramName) {
         String paramLower = paramName.toLowerCase(Locale.ROOT);
 
+        // A null would be interpolated as the literal text "null" and produce a CQL
+        // syntax error from the server, far away from the actual mistake.
+        mb.beginControlFlow("if ($L == null)", paramName);
+        mb.addStatement("throw new $T($S)", IllegalArgumentException.class,
+                "Structural parameter '" + paramName + "' must not be null: it is interpolated into the "
+                        + "CQL, not bound, so there is no null to bind.");
+        mb.endControlFlow();
+
         if (paramLower.equals("order") || paramLower.equals("orderby") || paramLower.equals("sort")) {
             // Validate ORDER BY clause format: "column ASC" or "column DESC"
-            mb.beginControlFlow("if ($L != null && !$L.matches($S))", paramName, paramName,
-                    SAFE_ORDER_PATTERN.pattern());
+            mb.beginControlFlow("if (!$L.matches($S))", paramName,
+                    patternForGeneratedMatches(SAFE_ORDER_PATTERN));
             mb.addStatement(
                     "throw new $T($S + $L)",
                     IllegalArgumentException.class,
@@ -239,45 +281,116 @@ final class QueryMethodFactory {
             mb.endControlFlow();
         } else if (paramLower.equals("limit") || paramLower.equals("offset")) {
             // Validate numeric values
-            mb.beginControlFlow("if ($L != null)", paramName);
             mb.addStatement("String $LStr = String.valueOf($L)", paramName, paramName);
-            mb.beginControlFlow("if (!$LStr.matches($S))", paramName, SAFE_INTEGER_PATTERN.pattern());
+            mb.beginControlFlow("if (!$LStr.matches($S))", paramName,
+                    patternForGeneratedMatches(SAFE_INTEGER_PATTERN));
             mb.addStatement(
                     "throw new $T($S + $LStr)",
                     IllegalArgumentException.class,
                     "Invalid numeric parameter: ",
                     paramName);
             mb.endControlFlow();
-            mb.endControlFlow();
         }
+    }
+
+    // --------------------------------------------------
+    // Select list vs. entity columns
+    // --------------------------------------------------
+
+    private static final Pattern SELECT_LIST_PATTERN = Pattern.compile(
+            "^(\\s*SELECT\\s+)(?:(DISTINCT\\s+))?(.+?)(\\s+FROM\\b.*)$",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    /**
+     * Reconciles a {@code @Query}'s select list with the columns the entity mapper reads.
+     * <p>
+     * The generated mapper reads <em>every</em> mapped field of the entity, so a query
+     * that selects a subset and maps back to the entity fails at runtime with
+     * {@code IllegalArgumentException: <column> is not a column in this row}. That is a
+     * build-time-knowable mistake, so it is reported at build time.
+     * <p>
+     * A {@code SELECT *} is rewritten to the explicit column list instead of being
+     * rejected: it is correct either way, but the driver warns that wildcard selects can
+     * be invalidated on CQL4 (risking broken deserialization) and works around it by
+     * requesting result metadata on every execution.
+     *
+     * @return the CQL to generate from, possibly with {@code *} expanded
+     * @throws IllegalArgumentException if the select list provably misses mapped columns
+     */
+    static String alignSelectListWithEntityColumns(String cql, List<String> entityColumns, String methodName) {
+        Matcher matcher = SELECT_LIST_PATTERN.matcher(cql);
+        if (!matcher.matches()) {
+            return cql;
+        }
+
+        String selectList = matcher.group(3).trim();
+        if ("*".equals(selectList)) {
+            return matcher.group(1) + orEmpty(matcher.group(2)) + String.join(", ", entityColumns)
+                    + matcher.group(4);
+        }
+
+        List<String> selected = new ArrayList<>();
+        for (String item : selectList.split(",")) {
+            String trimmed = item.trim();
+            // Function calls, aliases and anything else non-trivial are out of scope -
+            // guessing there would turn a working query into a build failure.
+            if (trimmed.isEmpty() || trimmed.contains("(") || trimmed.matches("(?i).*\\bAS\\b.*")
+                    || trimmed.contains(" ")) {
+                return cql;
+            }
+            selected.add(trimmed.toLowerCase(Locale.ROOT));
+        }
+
+        List<String> missing = entityColumns.stream()
+                .filter(column -> !selected.contains(column.toLowerCase(Locale.ROOT)))
+                .toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "@Query '" + methodName + "' selects only " + selected + " but maps its rows back to the "
+                            + "entity, whose mapper reads every column. Missing: " + missing
+                            + ". Either select all entity columns (or use SELECT *, which is expanded "
+                            + "automatically), or declare a projection via @Query(resultClass = ...).");
+        }
+        return cql;
+    }
+
+    private static String orEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     // --------------------------------------------------
     // Query Type Helpers
     // --------------------------------------------------
 
-    private static boolean isStructuralParam(String name) {
+    static boolean isStructuralParam(String name) {
         return STRUCTURAL_PARAMS.contains(name.toLowerCase(Locale.ROOT));
     }
 
-    private static boolean isSelect(String cql) {
+    static boolean isSelect(String cql) {
         return SELECT_PATTERN.matcher(cql.trim()).find();
     }
 
-    private static boolean isWrite(String cql) {
+    static boolean isWrite(String cql) {
         return WRITE_PATTERN.matcher(cql).find();
     }
 
-    private static boolean isConditional(String cql) {
-        String upper = cql.toUpperCase(Locale.ROOT);
-        return upper.contains(" IF ") && !upper.contains(" RETURNING ");
+    // "IF EXISTS" / "IF NOT EXISTS" / "IF col = ..." always follow the SET or VALUES
+    // clause, so require the keyword to stand alone rather than appear anywhere -
+    // including inside a string literal such as SET note = 'if you like'.
+    private static final Pattern CONDITIONAL_PATTERN = Pattern.compile(
+            "\\bIF\\s+(NOT\\s+)?(EXISTS\\b|[A-Za-z_][A-Za-z0-9_]*\\s*(=|<|>|<=|>=))",
+            Pattern.CASE_INSENSITIVE);
+
+    static boolean isConditional(String cql) {
+        return CONDITIONAL_PATTERN.matcher(cql).find()
+                && !cql.toUpperCase(Locale.ROOT).contains(" RETURNING ");
     }
 
-    private static boolean isReturning(String cql) {
+    static boolean isReturning(String cql) {
         return cql.toUpperCase(Locale.ROOT).contains(" RETURNING ");
     }
 
-    private static boolean isSchema(String cql) {
+    static boolean isSchema(String cql) {
         return SCHEMA_PATTERN.matcher(cql).find();
     }
 
@@ -380,9 +493,9 @@ final class QueryMethodFactory {
     private static void addCall(MethodSpec.Builder mb, String methodName, List<String> paramExpressions, boolean hasReturn) {
         String prefix = hasReturn ? "return " : "";
         if (paramExpressions.isEmpty()) {
-            mb.addStatement(prefix + "$L(query)", methodName);
+            mb.addStatement(prefix + "$L(" + QUERY_LOCAL_VARIABLE + ")", methodName);
         } else {
-            mb.addStatement(prefix + "$L(query, $L)", methodName, String.join(", ", paramExpressions));
+            mb.addStatement(prefix + "$L(" + QUERY_LOCAL_VARIABLE + ", $L)", methodName, String.join(", ", paramExpressions));
         }
     }
 
@@ -390,7 +503,7 @@ final class QueryMethodFactory {
     // Param Handling
     // --------------------------------------------------
 
-    private static List<String> extractParamNames(String cql) {
+    static List<String> extractParamNames(String cql) {
         List<String> params = new ArrayList<>();
         Matcher matcher = PARAM_PATTERN.matcher(cql);
         while (matcher.find()) {
@@ -405,7 +518,7 @@ final class QueryMethodFactory {
         return params;
     }
 
-    private static List<String> guessParamNamesFromCql(String cql) {
+    static List<String> guessParamNamesFromCql(String cql) {
         List<String> guessed = new ArrayList<>();
         String upper = cql.toUpperCase(Locale.ROOT);
 
@@ -426,10 +539,36 @@ final class QueryMethodFactory {
                 guessed.add("param" + (guessed.size() + 1));
             }
         }
-        return guessed;
+        return makeValidJavaParamNames(guessed);
     }
 
-    private static String toCamelCase(String column) {
+    /**
+     * Turns guessed names into something that can actually appear in a method signature.
+     * <p>
+     * The guesses come from column names, so they can repeat ({@code WHERE a = ? AND a = ?}),
+     * collide with a Java keyword ({@code WHERE class = ?}) or with the local variable the
+     * generated body uses for the CQL string. Any of those produced a method that did not
+     * compile, with an error pointing at generated code rather than at the {@code @Query}.
+     */
+    static List<String> makeValidJavaParamNames(List<String> names) {
+        List<String> result = new ArrayList<>(names.size());
+        Set<String> used = new HashSet<>();
+        for (String name : names) {
+            String candidate = name;
+            if (SourceVersion.isKeyword(candidate) || QUERY_LOCAL_VARIABLE.equals(candidate)
+                    || !SourceVersion.isIdentifier(candidate)) {
+                candidate = candidate + "Param";
+            }
+            String unique = candidate;
+            for (int i = 2; !used.add(unique); i++) {
+                unique = candidate + i;
+            }
+            result.add(unique);
+        }
+        return result;
+    }
+
+    static String toCamelCase(String column) {
         if (column == null || column.isEmpty()) {
             return column;
         }
@@ -488,7 +627,7 @@ final class QueryMethodFactory {
      * the surrounding CQL is escaped to {@code %%} so it survives String.format. Bindable
      * {@code :name} params are left untouched for the subsequent positional pass.
      */
-    private static String replaceStructuralParamsWithFormat(String cql, Set<String> structural) {
+    static String replaceStructuralParamsWithFormat(String cql, Set<String> structural) {
         Matcher matcher = PARAM_PATTERN.matcher(cql);
         StringBuilder out = new StringBuilder();
         int last = 0;
@@ -510,7 +649,7 @@ final class QueryMethodFactory {
         return s.replace("%", "%%");
     }
 
-    private static String replaceBindableParamsWithPositional(String cql, List<String> bindableParams) {
+    static String replaceBindableParamsWithPositional(String cql, List<String> bindableParams) {
         if (bindableParams.isEmpty()) {
             return cql;
         }
@@ -635,9 +774,9 @@ final class QueryMethodFactory {
 
         // Build the return statement
         if (paramExpressions.isEmpty()) {
-            mb.addStatement("return $L(query, $L)", repoCall, mapperLambda);
+            mb.addStatement("return $L(" + QUERY_LOCAL_VARIABLE + ", $L)", repoCall, mapperLambda);
         } else {
-            mb.addStatement("return $L(query, $L, $L)", repoCall, mapperLambda,
+            mb.addStatement("return $L(" + QUERY_LOCAL_VARIABLE + ", $L, $L)", repoCall, mapperLambda,
                     String.join(", ", paramExpressions));
         }
 

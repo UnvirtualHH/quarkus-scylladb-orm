@@ -5,18 +5,16 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-import io.quarkiverse.quarkus.scylladb.orm.enums.ClusteringOrder;
-
 @Target(ElementType.FIELD)
 @Retention(RetentionPolicy.RUNTIME)
 public @interface ClusteringKey {
     /**
-     * Order for composite clustering keys
+     * Order for composite clustering keys (0 = first, 1 = second, ...).
      */
     int ordinal() default 0;
 
-    /**
-     * Clustering order (ASC or DESC)
-     */
-    ClusteringOrder order() default ClusteringOrder.ASC;
+    // An `order()` attribute used to be declared here and was read by nothing: clustering
+    // order is a property of the table (CREATE TABLE ... WITH CLUSTERING ORDER BY), and
+    // this extension does not generate DDL. It was silently ignored, so it is gone.
+    // Sort a query with Sortable, or with an ORDER BY in a @Query.
 }

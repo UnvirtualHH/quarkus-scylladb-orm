@@ -16,6 +16,8 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.KeyComponent;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Pageable;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Paged;
 import io.quarkiverse.quarkus.scylladb.orm.repository.util.Sortable;
+import io.quarkus.runtime.BlockingOperationControl;
+import io.quarkus.runtime.BlockingOperationNotAllowedException;
 
 /**
  * Non-reactive repository base for Scylla/Cassandra.
@@ -28,11 +30,20 @@ public abstract class Repository<T, ID> {
     protected final EntityMapper<T> mapper;
     protected final RepositoryRegistry registry;
 
-    public Repository() {
+    /** Constant per-entity CQL, derived once from the mapper. */
+    private final EntityStatements statements;
+
+    /**
+     * Required so CDI can subclass this for its client proxy. Leaves every field null,
+     * so an instance built through it is unusable — protected to keep it out of reach of
+     * application code.
+     */
+    protected Repository() {
         this.session = null;
         this.tableName = null;
         this.mapper = null;
         this.registry = null;
+        this.statements = null;
     }
 
     public Repository(CqlSession session, String tableName, EntityMapper<T> mapper, RepositoryRegistry registry) {
@@ -40,6 +51,7 @@ public abstract class Repository<T, ID> {
         this.tableName = tableName;
         this.mapper = mapper;
         this.registry = registry;
+        this.statements = mapper != null ? EntityStatements.of(tableName, mapper) : null;
     }
 
     protected abstract Class<T> getEntityType();
@@ -47,20 +59,6 @@ public abstract class Repository<T, ID> {
     // ----------------------------------------------------------
     // Helper (keys + where clause)
     // ----------------------------------------------------------
-
-    private String buildWhereClause(String[] pkNames, String[] ckNames) {
-        String[] names = java.util.stream.Stream.concat(
-                Arrays.stream(pkNames),
-                Arrays.stream(ckNames)).toArray(String[]::new);
-
-        if (names.length == 0) {
-            throw new IllegalStateException("No primary key columns defined for table " + tableName);
-        }
-
-        return Arrays.stream(names)
-                .map(n -> n + " = ?")
-                .collect(Collectors.joining(" AND "));
-    }
 
     private Object[] buildKeyParams(EntityMapper<T> mapper, T entity) {
         List<KeyComponent<?>> pk = mapper.getPartitionKeyComponents(entity);
@@ -82,6 +80,34 @@ public abstract class Repository<T, ID> {
         return out;
     }
 
+    /**
+     * Refuses to run a blocking driver call on a Vert.x event loop thread.
+     * <p>
+     * Every method of this class blocks. Injected into a reactive endpoint it would stall
+     * the event loop, and under load that takes the whole application down in a way that
+     * is hard to trace back here. Failing fast with a pointer to the fix is the lesser
+     * evil — use {@code ReactiveRepository}, or mark the caller {@code @Blocking}.
+     * <p>
+     * Outside a Quarkus runtime (plain unit tests, a bare JVM) the detector is not
+     * installed; anything unexpected there is treated as "blocking is fine", because this
+     * guard must never be the reason a legitimate call fails.
+     */
+    private void assertBlockingAllowed(String cql) {
+        boolean allowed;
+        try {
+            allowed = BlockingOperationControl.isBlockingAllowed();
+        } catch (RuntimeException | LinkageError ignored) {
+            return; // no Quarkus IO-thread detector available
+        }
+        if (!allowed) {
+            throw new BlockingOperationNotAllowedException(
+                    "Blocking ScyllaDB call on the Vert.x event loop thread (table '" + tableName + "'): " + cql
+                            + ". Inject the generated ReactiveRepository instead, or annotate the calling method "
+                            + "with @io.smallrye.common.annotation.Blocking so Quarkus dispatches it to a worker "
+                            + "thread.");
+        }
+    }
+
     // ----------------------------------------------------------
     // Core Repository Methods
     // ----------------------------------------------------------
@@ -95,7 +121,7 @@ public abstract class Repository<T, ID> {
         if (pkNames.length != 1) {
             throw new IllegalStateException("findById requires exactly one partition key column.");
         }
-        String cql = String.format("SELECT * FROM %s WHERE %s = ?", tableName, pkNames[0]);
+        String cql = String.format("SELECT %s FROM %s WHERE %s = ?", statements.columnList, tableName, pkNames[0]);
         ResultSet rs = doExecuteQuery(cql, id);
         Row row = rs.one();
         return row != null ? mapRow(row) : null;
@@ -107,14 +133,14 @@ public abstract class Repository<T, ID> {
     public T findByKeys(Object... keys) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
 
         int expected = pkNames.length + ckNames.length;
         if (keys.length != expected) {
             throw new IllegalArgumentException("Expected " + expected + " key parts, got " + keys.length);
         }
 
-        String cql = String.format("SELECT * FROM %s WHERE %s", tableName, where);
+        String cql = String.format("SELECT %s FROM %s WHERE %s", statements.columnList, tableName, where);
         ResultSet rs = doExecuteQuery(cql, keys);
         Row row = rs.one();
         return row != null ? mapRow(row) : null;
@@ -127,7 +153,7 @@ public abstract class Repository<T, ID> {
      * partition-scoped {@code @Query} in production.
      */
     public List<T> findAll() {
-        String cql = "SELECT * FROM " + tableName;
+        String cql = "SELECT " + statements.columnList + " FROM " + tableName;
         ResultSet rs = doExecuteQuery(cql);
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
@@ -136,33 +162,28 @@ public abstract class Repository<T, ID> {
 
     public List<T> findAll(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT * FROM %s %s LIMIT %d", tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s LIMIT ?", statements.columnList, tableName, sortClause);
 
-        ResultSet rs = doExecutePagedQuery(cql, pageable);
+        ResultSet rs = doExecutePagedQuery(cql, pageable, pageable.size());
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
                 .toList();
     }
 
+    /**
+     * Returns one page plus the state needed to fetch the next one.
+     * <p>
+     * Deliberately has no {@code LIMIT}: a {@code LIMIT} caps the <em>whole</em> result
+     * set, so the server would consider the query complete after the first page and
+     * return no paging state — {@link Paged#hasNextPage()} could never be true. Paging
+     * is driven purely by the statement's page size.
+     */
     public Paged<T> findAllPaged(Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT * FROM %s %s LIMIT %d", tableName, sortClause, pageable.size());
+        String cql = String.format("SELECT %s FROM %s %s", statements.columnList, tableName, sortClause);
 
         ResultSet rs = doExecutePagedQuery(cql, pageable);
-
-        List<T> content = StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-
-        String nextState = null;
-        if (!rs.isFullyFetched()) {
-            var pagingState = rs.getExecutionInfo().getSafePagingState();
-            if (pagingState != null) {
-                nextState = pagingState.toString();
-            }
-        }
-
-        return new Paged<>(content, -1, nextState);
+        return toPage(rs);
     }
 
     /**
@@ -200,7 +221,7 @@ public abstract class Repository<T, ID> {
     public boolean exists(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
                 pkNames[0], tableName, where);
         ResultSet rs = doExecuteQuery(cql, buildKeyParams(mapper, entity));
@@ -209,13 +230,7 @@ public abstract class Repository<T, ID> {
 
     public T save(T entity) {
         Map<String, Object> properties = mapper.toProperties(entity);
-
-        String columns = String.join(", ", properties.keySet());
-        String placeholders = properties.keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
-        String cql = String.format("INSERT INTO %s (%s) VALUES (%s)", tableName, columns, placeholders);
-
-        doExecuteWrite(cql, properties.values().toArray());
-
+        doExecuteColumnWrite(statements.insertCql, statements.allColumns, properties);
         return entity;
     }
 
@@ -225,34 +240,22 @@ public abstract class Repository<T, ID> {
     }
 
     public T update(T entity) {
+        if (statements.updateCql == null) {
+            return entity; // entity consists solely of key columns — nothing to SET
+        }
+
         Map<String, Object> properties = mapper.toProperties(entity);
-
-        String[] pkNames = mapper.getPartitionKeyNames();
-        String[] ckNames = mapper.getClusteringKeyNames();
-
-        // remove key columns from SET clause
-        for (String k : pkNames)
+        for (String k : mapper.getPartitionKeyNames())
             properties.remove(k);
-        for (String k : ckNames)
+        for (String k : mapper.getClusteringKeyNames())
             properties.remove(k);
 
         if (properties.isEmpty()) {
-            return entity;
+            return entity; // every non-key column is null — nothing to write
         }
 
-        String setClause = properties.keySet().stream()
-                .map(k -> k + " = ?")
-                .collect(Collectors.joining(", "));
-
-        String where = buildWhereClause(pkNames, ckNames);
-        String cql = String.format("UPDATE %s SET %s WHERE %s", tableName, setClause, where);
-
-        Object[] values = properties.values().toArray();
-        Object[] keys = buildKeyParams(mapper, entity);
-        Object[] params = concat(values, keys);
-
-        doExecuteWrite(cql, params);
-
+        doExecuteColumnWrite(statements.updateCql, statements.nonKeyColumns, properties,
+                buildKeyParams(mapper, entity));
         return entity;
     }
 
@@ -272,7 +275,7 @@ public abstract class Repository<T, ID> {
     public void delete(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("DELETE FROM %s WHERE %s", tableName, where);
         doExecuteWrite(cql, buildKeyParams(mapper, entity));
     }
@@ -280,7 +283,7 @@ public abstract class Repository<T, ID> {
     public void deleteByKeys(Object... keys) {
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
-        String where = buildWhereClause(pkNames, ckNames);
+        String where = statements.requireWhereFullKey(tableName);
 
         int expected = pkNames.length + ckNames.length;
         if (keys.length != expected) {
@@ -302,32 +305,11 @@ public abstract class Repository<T, ID> {
                 .toList();
     }
 
-    public List<T> query(String cql, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-    }
-
-    public List<T> query(String cql, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-    }
-
-    public List<T> query(String cql, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-    }
-
     public List<T> query(String cql, Pageable pageable, Sortable sortable, Object... params) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String pagedCql = String.format("%s %s LIMIT %d", cql, sortClause, pageable.size());
+        String pagedCql = String.format("%s %s LIMIT ?", cql, sortClause);
 
-        ResultSet rs = doExecutePagedQuery(pagedCql, pageable, params);
+        ResultSet rs = doExecutePagedQuery(pagedCql, pageable, concat(params, new Object[] { pageable.size() }));
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(this::mapRow)
                 .toList();
@@ -335,45 +317,31 @@ public abstract class Repository<T, ID> {
 
     public Paged<T> queryPaged(String baseCql, Map<String, Object> params, Pageable pageable, Sortable sortable) {
         String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String pagedCql = baseCql + " " + sortClause + " LIMIT " + pageable.size();
+        String pagedCql = baseCql + " " + sortClause;
 
-        ResultSet rs = doExecutePagedQuery(pagedCql, pageable, params);
+        ResultSet rs = doExecutePagedQuery(pagedCql, pageable, params != null ? params : Map.of());
+        return toPage(rs);
+    }
 
-        List<T> content = StreamSupport.stream(rs.spliterator(), false)
-                .map(this::mapRow)
-                .toList();
-
-        String nextState = null;
-        if (!rs.isFullyFetched()) {
-            var pagingState = rs.getExecutionInfo().getSafePagingState();
-            if (pagingState != null) {
-                nextState = pagingState.toString();
-            }
+    /**
+     * Maps exactly the rows of the current page. Iterating the {@link ResultSet} itself
+     * would transparently fetch every following page and defeat paging entirely, so this
+     * consumes only what is available without a further round trip.
+     */
+    private Paged<T> toPage(ResultSet rs) {
+        int available = rs.getAvailableWithoutFetching();
+        List<T> content = new ArrayList<>(available);
+        Iterator<Row> rows = rs.iterator();
+        for (int i = 0; i < available && rows.hasNext(); i++) {
+            content.add(mapRow(rows.next()));
         }
 
-        return new Paged<>(content, -1, nextState);
+        var pagingState = rs.getExecutionInfo().getSafePagingState();
+        return new Paged<>(content, pagingState != null ? pagingState.toString() : null);
     }
 
     public T querySingle(String cql, Object... params) {
         ResultSet rs = doExecuteQuery(cql, params);
-        Row row = rs.one();
-        return row != null ? mapRow(row) : null;
-    }
-
-    public T querySingle(String cql, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        Row row = rs.one();
-        return row != null ? mapRow(row) : null;
-    }
-
-    public T querySingle(String cql, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        Row row = rs.one();
-        return row != null ? mapRow(row) : null;
-    }
-
-    public T querySingle(String cql, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
         Row row = rs.one();
         return row != null ? mapRow(row) : null;
     }
@@ -394,24 +362,6 @@ public abstract class Repository<T, ID> {
         return row != null ? row.getLong(0) : null;
     }
 
-    public Long queryScalar(String cql, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        Row row = rs.one();
-        return row != null ? row.getLong(0) : null;
-    }
-
-    public Long queryScalar(String cql, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        Row row = rs.one();
-        return row != null ? row.getLong(0) : null;
-    }
-
-    public Long queryScalar(String cql, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
-        Row row = rs.one();
-        return row != null ? row.getLong(0) : null;
-    }
-
     // ----------------------------------------------------------
     // Projection Query Methods
     // ----------------------------------------------------------
@@ -422,47 +372,8 @@ public abstract class Repository<T, ID> {
         return row != null ? mapperFn.apply(row) : null;
     }
 
-    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        Row row = rs.one();
-        return row != null ? mapperFn.apply(row) : null;
-    }
-
-    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        Row row = rs.one();
-        return row != null ? mapperFn.apply(row) : null;
-    }
-
-    public <R> R queryProjection(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
-        Row row = rs.one();
-        return row != null ? mapperFn.apply(row) : null;
-    }
-
     public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object... params) {
         ResultSet rs = doExecuteQuery(cql, params);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapperFn)
-                .toList();
-    }
-
-    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1) {
-        ResultSet rs = doExecuteQuery(cql, p1);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapperFn)
-                .toList();
-    }
-
-    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2);
-        return StreamSupport.stream(rs.spliterator(), false)
-                .map(mapperFn)
-                .toList();
-    }
-
-    public <R> List<R> queryProjectionList(String cql, Function<Row, R> mapperFn, Object p1, Object p2, Object p3) {
-        ResultSet rs = doExecuteQuery(cql, p1, p2, p3);
         return StreamSupport.stream(rs.spliterator(), false)
                 .map(mapperFn)
                 .toList();
@@ -476,23 +387,12 @@ public abstract class Repository<T, ID> {
         doExecuteWrite(cql, params);
     }
 
-    public void execute(String cql, Object p1) {
-        doExecuteWrite(cql, p1);
-    }
-
-    public void execute(String cql, Object p1, Object p2) {
-        doExecuteWrite(cql, p1, p2);
-    }
-
-    public void execute(String cql, Object p1, Object p2, Object p3) {
-        doExecuteWrite(cql, p1, p2, p3);
-    }
-
     // ----------------------------------------------------------
     // Internal
     // ----------------------------------------------------------
 
     private ResultSet doExecuteQuery(String cql, Object... params) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             // Reads are idempotent: safe to retry and to use speculative execution.
@@ -504,6 +404,7 @@ public abstract class Repository<T, ID> {
     }
 
     private ResultSet doExecutePagedQuery(String cql, Pageable pageable, Object... params) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             BoundStatement bound = StatementBinder.bind(session, ps, params)
@@ -518,7 +419,25 @@ public abstract class Repository<T, ID> {
         }
     }
 
+    /**
+     * Executes a write whose statement text is fixed: columns absent from {@code values}
+     * are left unset instead of being bound to null, so the CQL — and therefore the
+     * prepared statement — stays the same regardless of which fields are populated.
+     */
+    private ResultSet doExecuteColumnWrite(String cql, String[] columns, Map<String, Object> values,
+            Object... keyParams) {
+        assertBlockingAllowed(cql);
+        try {
+            PreparedStatement ps = session.prepare(cql);
+            // Writes are intentionally NOT marked idempotent (see doExecuteWrite).
+            return session.execute(StatementBinder.bindColumns(session, ps, columns, values, keyParams));
+        } catch (Exception e) {
+            throw new ScyllaWriteException(tableName, cql, values.values().toArray(), e);
+        }
+    }
+
     private ResultSet doExecuteWrite(String cql, Object... params) {
+        assertBlockingAllowed(cql);
         try {
             PreparedStatement ps = session.prepare(cql);
             // Writes are intentionally NOT marked idempotent: LWT / counter updates must
