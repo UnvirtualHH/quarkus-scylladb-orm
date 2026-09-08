@@ -18,9 +18,11 @@ import io.quarkiverse.quarkus.scylladb.orm.mapping.Table;
  * Annotation processor for Scylla/Cassandra entities.
  *
  * Generates:
- * - <Entity>Mapper
- * - <Entity>BaseRepository (blocking)
- * - <Entity>BaseReactiveRepository (reactive)
+ * <ul>
+ * <li>{@code <Entity>Mapper}</li>
+ * <li>{@code <Entity>BaseRepository} (blocking)</li>
+ * <li>{@code <Entity>BaseReactiveRepository} (reactive)</li>
+ * </ul>
  */
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("io.quarkiverse.quarkus.scylladb.orm.mapping.Table")
