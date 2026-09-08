@@ -13,10 +13,13 @@
 
     <properties>
         <skipITs>true</skipITs>
-        <!-- Starting a second, TLS-enabled ScyllaDB next to the suite's plaintext one
-             takes minutes on a contended Docker VM. Excluded here so the everyday build
-             stays fast; CI clears this property in a dedicated job. -->
-        <excluded.test.groups>tls</excluded.test.groups>
+        <!-- tls: starting a second, TLS-enabled ScyllaDB next to the suite's plaintext
+             one takes minutes on a contended Docker VM.
+             throughput: writes tens of thousands of rows and measures rates, which is
+             pointless to run on every commit.
+             Both are excluded here so the everyday build stays fast; CI clears this
+             property in dedicated jobs. -->
+        <excluded.test.groups>tls,throughput</excluded.test.groups>
     </properties>
 
     <dependencies>

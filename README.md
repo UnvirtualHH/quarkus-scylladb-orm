@@ -548,6 +548,11 @@ Behaviour changes that need no action:
   signature repeated the name and did not compile.
 - A projection (`@Query(resultClass = ...)`) can now read `List`/`Set`/`Map` columns.
   Before, such a field aborted generation with `not a valid name: List<java`.
+- Reactive `Multi` reads honour backpressure. They previously pushed every row of every
+  page into an unbounded buffer as fast as the driver delivered them, so a slow consumer
+  did not slow the fetching — it accumulated the whole result set in memory. Pages are
+  now fetched on demand. No source change needed; a consumer that relied on the stream
+  running ahead of it will now see the fetching pace itself.
 - A lone `Map` argument is read as named parameters only when its keys are actual
   parameter names of the statement. `execute("UPDATE t SET attrs = ? WHERE ...", someMap)`
   now binds the map as a value; before it was always taken for named parameters and
@@ -601,6 +606,32 @@ the loop — inject the reactive repository, or annotate the caller with
 `findAll()` (no paging) and `count()` perform cluster-wide scans that will time out and
 overload coordinators on large tables. Use `findAll(Pageable, Sortable)`, partition-scoped
 `@Query` methods, or a maintained counter table instead.
+
+### Reactive streams honour backpressure
+`Multi`-returning reads (`findAll()`, `query(...)`, generated `@Query` methods with
+`ReturnType.LIST`, `queryProjectionList`) fetch **one page at a time, on demand**. Asking
+for *n* rows pulls at most the pages those rows live on; nothing is fetched before it is
+requested, and cancelling stops the fetching.
+
+That makes a bounded-memory consumer actually bounded:
+
+```java
+repository.query("SELECT ... FROM event WHERE tenant = ?", tenant)
+    .onItem().transformToUniAndConcatenate(this::slowCall)   // demand of 1
+    .collect().asList();
+```
+
+Pages are pulled only as fast as `slowCall` retires them, instead of the whole result set
+piling up in memory.
+
+Rows are emitted on the driver's I/O thread. If your consumer blocks or does heavy work,
+add `.emitOn(...)` so it does not hold up that thread:
+
+```java
+repository.findAll()
+    .emitOn(Infrastructure.getDefaultWorkerPool())
+    .onItem().transform(this::expensive);
+```
 
 ### Retries / idempotency
 Read statements are marked idempotent, so the driver may safely retry them and use
@@ -735,12 +766,43 @@ public Multi<ProcessedData> processStream() {
 }
 ```
 
+Pages are fetched on demand, so this streams in bounded memory however large the table is.
+If `process` blocks or is expensive, add `.emitOn(...)` — items arrive on a driver I/O
+thread. See [Reactive streams honour backpressure](#reactive-streams-honour-backpressure).
+
 ## Building from Source
 
 ```bash
 git clone https://github.com/UnvirtualHH/quarkus-scylladb-orm.git
 cd quarkus-scylladb-orm
 mvn clean install
+```
+
+### Tests
+
+`mvn verify` runs the unit tests plus the integration tests against a ScyllaDB started
+via Testcontainers. Two groups are excluded from it because they are slow and would say
+nothing on most commits:
+
+```bash
+# TLS end to end (starts a second, TLS-enabled ScyllaDB)
+mvn verify -Dexcluded.test.groups=throughput -Dtest=TlsConnectionTest -Dsurefire.failIfNoSpecifiedTests=false
+
+# Coarse write-path throughput against a real ScyllaDB
+mvn verify -Dexcluded.test.groups=tls -Dtest=WriteThroughputTest -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+CI runs both in their own steps.
+
+### Benchmarks
+
+JMH microbenchmarks for the generated mappers and the streaming pipeline live in
+[`benchmarks/`](benchmarks/README.md). They are compiled by every build and run
+explicitly:
+
+```bash
+mvn -pl benchmarks -am package -DskipTests
+java -jar benchmarks/target/benchmarks.jar
 ```
 
 Run tests (requires Docker for Testcontainers):

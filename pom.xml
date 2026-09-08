@@ -162,6 +162,9 @@
             </activation>
             <modules>
                 <module>integration-tests</module>
+                <!-- Compiled on every non-release build so the benchmarks cannot rot;
+                     they are never executed by `mvn verify`. See benchmarks/README.md. -->
+                <module>benchmarks</module>
             </modules>
         </profile>
     </profiles>

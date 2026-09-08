@@ -1,0 +1,48 @@
+name: Benchmarks
+
+# JMH runs take minutes and their numbers only mean something compared against runs on
+# the same machine, so they never gate a pull request. The benchmark sources are
+# compiled by every ordinary build (the `benchmarks` module is in the reactor), which is
+# what keeps them from rotting; this workflow is for actually running them.
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so a slow drift in per-row cost has somewhere to show up.
+    - cron: '0 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jmh:
+    name: JMH microbenchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build the benchmarks jar
+        run: mvn -B -ntp -pl benchmarks -am package -DskipTests
+
+      - name: Run
+        run: java -jar benchmarks/target/benchmarks.jar -rf json -rff benchmarks/target/jmh-result.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmh-result
+          path: benchmarks/target/jmh-result.json
+          retention-days: 90

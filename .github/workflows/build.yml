@@ -47,6 +47,12 @@ jobs:
       - name: TLS integration test
         run: mvn -B -ntp verify -Dexcluded.test.groups= -Dtest=TlsConnectionTest -Dsurefire.failIfNoSpecifiedTests=false
 
+      # Also its own step: it writes tens of thousands of rows. The assertions are
+      # relational (concurrent beats sequential) rather than absolute, so a shared
+      # runner does not make it flaky — see WriteThroughputTest.
+      - name: Write-path throughput check
+        run: mvn -B -ntp verify -Dexcluded.test.groups=tls -Dtest=WriteThroughputTest -Dsurefire.failIfNoSpecifiedTests=false
+
       - name: Upload surefire reports on failure
         if: failure()
         uses: actions/upload-artifact@v4

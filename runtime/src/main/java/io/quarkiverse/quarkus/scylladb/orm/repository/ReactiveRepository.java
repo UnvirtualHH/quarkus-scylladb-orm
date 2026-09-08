@@ -2,7 +2,9 @@ package io.quarkiverse.quarkus.scylladb.orm.repository;
 
 import java.util.*;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -304,15 +306,7 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     protected Multi<T> executeQueryForList(String cql, Object... params) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(true, cql, params).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
-                    return;
-                }
-                emitAllPages(firstPage, emitter, cql, params);
-            });
-        });
+        return rows(cql, params, mapper::map, "Failed to map row");
     }
 
     protected <R> Uni<R> runScalarQuery(String cql, Function<Row, R> mapperFn, Object... params) {
@@ -325,14 +319,75 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     protected <R> Multi<R> projectionMulti(String cql, Function<Row, R> mapperFn, Object... params) {
-        return Multi.createFrom().emitter(emitter -> {
-            prepareAndExecute(true, cql, params).whenComplete((firstPage, err) -> {
-                if (err != null) {
-                    emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
-                    return;
-                }
-                emitAllProjectionPages(firstPage, emitter, mapperFn, cql, params);
-            });
+        return rows(cql, params, mapperFn, "Failed to map projection row");
+    }
+
+    /**
+     * Streams the rows of a query, one page at a time, <strong>driven by demand</strong>.
+     * <p>
+     * The previous implementation pushed into a {@code Multi.createFrom().emitter(...)}:
+     * every row of every page was emitted as fast as the driver could deliver them, with
+     * only {@code isCancelled()} consulted and never {@code requested()}. That emitter
+     * defaults to {@code BackPressureStrategy.BUFFER} with an unbounded queue, so a
+     * subscriber that stayed subscribed but consumed slowly did not slow the fetching
+     * down — it just accumulated the whole result set in memory, silently and without
+     * ever overflowing. Returning a {@code Multi} instead of a {@code Uni<List<T>>} is a
+     * promise that it can be consumed incrementally in bounded memory; this keeps it.
+     * <p>
+     * Failures keep their previous meaning: anything from executing the query or
+     * fetching a page is a {@link ScyllaQueryException}, anything from turning a row
+     * into an object is a {@link ScyllaMappingException}. The transform sits above the
+     * row stage so that a mapping failure is not re-labelled as a query failure.
+     */
+    private <R> Multi<R> rows(String cql, Object[] params, Function<Row, R> rowMapper, String mappingError) {
+        Multi<AsyncResultSet> pages = pagesFrom(() -> prepareAndExecute(true, cql, params))
+                .onFailure().transform(err -> new ScyllaQueryException(tableName, cql, params, err));
+        return rowsOf(pages, row -> {
+            try {
+                return rowMapper.apply(row);
+            } catch (Exception e) {
+                throw new ScyllaMappingException(tableName, mappingError, e);
+            }
+        });
+    }
+
+    /**
+     * Flattens pages into rows without widening the demand.
+     * <p>
+     * {@code concatenate} subscribes to one inner stream at a time and passes the
+     * downstream demand through, so asking for n rows pulls at most the pages those n
+     * rows live on. A merging or prefetching flatten here would put the unbounded
+     * fetching straight back, one level down from where it used to be.
+     */
+    static <R> Multi<R> rowsOf(Multi<AsyncResultSet> pages, Function<Row, R> rowMapper) {
+        return pages
+                .onItem().transformToMultiAndConcatenate(page -> Multi.createFrom().iterable(page.currentPage()))
+                .onItem().transform(rowMapper);
+    }
+
+    /**
+     * A page at a time, the next one fetched only once the stream is asked for it.
+     * <p>
+     * {@code repeating().uni(...)} subscribes to the produced {@link Uni} — and so runs
+     * the fetch — only when there is downstream demand, and {@code whilst} keeps
+     * repeating as long as the page just emitted reports more pages.
+     * <p>
+     * Wrapped in {@code deferred} so that each subscription gets its own cursor: the
+     * state-carrying {@code uni(Supplier, Function)} overload holds one shared state for
+     * the lifetime of the {@code Uni}, which would make a second subscription resume
+     * from where the first one stopped.
+     */
+    static Multi<AsyncResultSet> pagesFrom(Supplier<CompletionStage<AsyncResultSet>> firstPage) {
+        return Multi.createFrom().deferred(() -> {
+            AtomicReference<AsyncResultSet> cursor = new AtomicReference<>();
+            return Multi.createBy().repeating()
+                    .uni(() -> Uni.createFrom()
+                            .completionStage(() -> {
+                                AsyncResultSet previous = cursor.get();
+                                return previous == null ? firstPage.get() : previous.fetchNextPage();
+                            })
+                            .invoke(cursor::set))
+                    .whilst(AsyncResultSet::hasMorePages);
         });
     }
 
@@ -357,69 +412,6 @@ public abstract class ReactiveRepository<T, ID> {
         return Uni.createFrom().completionStage(() -> prepareAndExecute(false, cql, params))
                 .replaceWithVoid()
                 .onFailure().transform(err -> new ScyllaWriteException(tableName, cql, params, err));
-    }
-
-    private void emitAllPages(AsyncResultSet rs, io.smallrye.mutiny.subscription.MultiEmitter<? super T> emitter,
-            String cql, Object[] params) {
-        try {
-            for (Row row : rs.currentPage()) {
-                if (emitter.isCancelled()) {
-                    return;
-                }
-                emitter.emit(mapper.map(row));
-            }
-            if (emitter.isCancelled()) {
-                return;
-            }
-            if (rs.hasMorePages()) {
-                rs.fetchNextPage().whenComplete((nextPage, err) -> {
-                    if (emitter.isCancelled()) {
-                        return;
-                    }
-                    if (err != null) {
-                        emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
-                    } else {
-                        emitAllPages(nextPage, emitter, cql, params);
-                    }
-                });
-            } else {
-                emitter.complete();
-            }
-        } catch (Exception e) {
-            emitter.fail(new ScyllaMappingException(tableName, "Failed to map row", e));
-        }
-    }
-
-    private <R> void emitAllProjectionPages(AsyncResultSet rs,
-            io.smallrye.mutiny.subscription.MultiEmitter<? super R> emitter,
-            Function<Row, R> mapperFn, String cql, Object[] params) {
-        try {
-            for (Row row : rs.currentPage()) {
-                if (emitter.isCancelled()) {
-                    return;
-                }
-                emitter.emit(mapperFn.apply(row));
-            }
-            if (emitter.isCancelled()) {
-                return;
-            }
-            if (rs.hasMorePages()) {
-                rs.fetchNextPage().whenComplete((nextPage, err) -> {
-                    if (emitter.isCancelled()) {
-                        return;
-                    }
-                    if (err != null) {
-                        emitter.fail(new ScyllaQueryException(tableName, cql, params, err));
-                    } else {
-                        emitAllProjectionPages(nextPage, emitter, mapperFn, cql, params);
-                    }
-                });
-            } else {
-                emitter.complete();
-            }
-        } catch (Exception e) {
-            emitter.fail(new ScyllaMappingException(tableName, "Failed to map projection row", e));
-        }
     }
 
     private CompletionStage<AsyncResultSet> prepareAndExecute(boolean idempotent, String cql, Object... params) {
