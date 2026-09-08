@@ -150,7 +150,6 @@ public abstract class ReactiveRepository<T, ID> {
      */
     public Uni<Boolean> exists(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
-        String[] ckNames = mapper.getClusteringKeyNames();
         String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
                 pkNames[0], tableName, where);
@@ -197,8 +196,6 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public Uni<Void> delete(T entity) {
-        String[] pkNames = mapper.getPartitionKeyNames();
-        String[] ckNames = mapper.getClusteringKeyNames();
         String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("DELETE FROM %s WHERE %s", tableName, where);
         return executeUpdate(cql, buildKeyParams(entity));
@@ -449,10 +446,4 @@ public abstract class ReactiveRepository<T, ID> {
         return mapper;
     }
 
-    private Object[] concat(Object[] left, Object[] right) {
-        Object[] out = new Object[left.length + right.length];
-        System.arraycopy(left, 0, out, 0, left.length);
-        System.arraycopy(right, 0, out, left.length, right.length);
-        return out;
-    }
 }

@@ -65,12 +65,39 @@ final class StatementBinder {
     }
 
     static BoundStatement bind(CqlSession session, PreparedStatement ps, Object... params) {
-        if (params.length == 1 && params[0] instanceof Map<?, ?> map) {
+        if (params.length == 1 && params[0] instanceof Map<?, ?> map && isNamedParams(ps, map)) {
             return bindNamed(session, ps, map);
         }
         // ps.bind resolves codecs by the statement's declared column types — the
         // canonical, collection-safe binding path; nulls are handled natively.
         return ps.bind(params);
+    }
+
+    /**
+     * Whether a lone {@link Map} argument is the documented "named parameters" form
+     * rather than a positional value for a {@code map<,>} column.
+     * <p>
+     * Both are legitimate calls — {@code query(cql, Map.of("name", "John"))} binds by
+     * name, {@code query("... WHERE attrs = ?", attrs)} binds one map value — and the
+     * argument alone cannot tell them apart. Deciding on the type of the value made the
+     * second one impossible: its entries were read as parameter names and the driver
+     * rejected the first one it did not recognise. The prepared statement knows which
+     * names exist, so ask it.
+     * <p>
+     * A single-entry map keyed exactly like the statement's only marker is still
+     * ambiguous; it resolves to named binding, as it always has.
+     */
+    private static boolean isNamedParams(PreparedStatement ps, Map<?, ?> map) {
+        if (map.isEmpty()) {
+            return false; // nothing to bind by name; let the positional path report the arity
+        }
+        ColumnDefinitions defs = ps.getVariableDefinitions();
+        for (Object key : map.keySet()) {
+            if (!(key instanceof String name) || !defs.contains(name)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

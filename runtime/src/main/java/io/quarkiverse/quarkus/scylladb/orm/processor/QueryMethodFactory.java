@@ -108,10 +108,12 @@ final class QueryMethodFactory {
             try {
                 methods.add(buildMethodForQuery(entityType, q, reactive, env));
             } catch (Exception e) {
-                // Log error but continue processing other queries
+                // Log error but continue processing other queries. Naming the query is
+                // the difference between a fixable message and a mystery: an entity can
+                // declare a dozen of them.
                 env.getMessager().printMessage(
                         javax.tools.Diagnostic.Kind.ERROR,
-                        "Failed to generate query method for @Query: " + e.getMessage(),
+                        "Failed to generate query method for @Query '" + methodName + "': " + e.getMessage(),
                         entityType);
             }
         }
@@ -178,8 +180,13 @@ final class QueryMethodFactory {
         MethodSpec.Builder mb = MethodSpec.methodBuilder(methodName)
                 .addModifiers(Modifier.PUBLIC);
 
-        // Add parameters
-        for (String p : paramNames) {
+        // Add parameters. A name that appears several times in the CQL — "WHERE created
+        // >= :ts AND updated >= :ts" — is one method parameter bound to several markers,
+        // not several parameters: emitting it once per occurrence produced a signature
+        // with duplicate names, and a javac error pointing at generated code rather than
+        // at the @Query. The per-occurrence lists below stay as they are, because the
+        // argument lists must have one entry per marker.
+        for (String p : new LinkedHashSet<>(paramNames)) {
             TypeName type = resolveParamType(entityType, p, q, env);
             mb.addParameter(type, p);
         }
@@ -845,6 +852,11 @@ final class QueryMethodFactory {
         return lambda.build();
     }
 
+    /** Whether a type can be written as {@code X.class}: a class, with no type arguments. */
+    private static boolean isRawClass(TypeMirror type) {
+        return type.getKind() == TypeKind.DECLARED && ((DeclaredType) type).getTypeArguments().isEmpty();
+    }
+
     private static CodeBlock generateValueExtraction(String columnName, TypeMirror type) {
         String fqcn = type.toString();
 
@@ -860,6 +872,37 @@ final class QueryMethodFactory {
                 case BYTE -> CodeBlock.of("row.getByte($S)", columnName);
                 default -> CodeBlock.of("row.get($S, $T.class)", columnName, ClassName.bestGuess(fqcn));
             };
+        }
+
+        // Collections — the typed Row accessors, matching the entity mapper. Passing a
+        // parameterized type to the generic row.get(name, Class) path is not even
+        // expressible: ClassName.bestGuess("java.util.List<java.lang.String>") fails, and
+        // the @Query was dropped with "not a valid name: List<java".
+        if (fqcn.startsWith("java.util.List<") || fqcn.startsWith("java.util.Set<")
+                || fqcn.startsWith("java.util.Map<")) {
+            List<? extends TypeMirror> typeArgs = ((DeclaredType) type).getTypeArguments();
+            // The accessors take a Class, so every element type has to be one — a
+            // wildcard or a nested generic (List<List<String>>) has no .class and would
+            // emit code that does not compile. Those fall through to the error below.
+            if (typeArgs.stream().allMatch(QueryMethodFactory::isRawClass)) {
+                if (fqcn.startsWith("java.util.Map<") && typeArgs.size() == 2) {
+                    return CodeBlock.of("row.getMap($S, $T.class, $T.class)", columnName,
+                            TypeName.get(typeArgs.get(0)).box(), TypeName.get(typeArgs.get(1)).box());
+                }
+                if (typeArgs.size() == 1) {
+                    String accessor = fqcn.startsWith("java.util.List<") ? "getList" : "getSet";
+                    return CodeBlock.of("row.$L($S, $T.class)", accessor, columnName,
+                            TypeName.get(typeArgs.get(0)).box());
+                }
+            }
+        }
+
+        // Anything else parameterized cannot go through row.get(name, Class) either.
+        // Fail with a message that names the field instead of one naming a mangled type.
+        if (fqcn.indexOf('<') >= 0) {
+            throw new IllegalArgumentException("cannot read column '" + columnName + "' into the generic type "
+                    + fqcn + ". Projections support List/Set/Map of a concrete element type; for anything else "
+                    + "use a non-generic field or map the row yourself.");
         }
 
         // Object types — use generic row.get() with type class

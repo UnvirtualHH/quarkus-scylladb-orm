@@ -18,10 +18,16 @@
             <version>${javapoet.version}</version>
         </dependency>
 
+        <!-- Only needed to compile the @AutoService annotation on EntityMapperProcessor;
+             the service file itself is written by the processor configured under
+             annotationProcessorPaths below. At compile scope it dragged auto-common,
+             failureaccess, jspecify and error_prone_annotations onto the runtime
+             classpath of every application using this extension. -->
         <dependency>
             <groupId>com.google.auto.service</groupId>
             <artifactId>auto-service</artifactId>
             <version>1.1.1</version>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>

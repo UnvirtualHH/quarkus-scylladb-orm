@@ -123,4 +123,27 @@ class CqlSessionProducerTest {
             assertTrue(error.getMessage().contains("quarkus.scylla.auth.password"), error.getMessage());
         }
     }
+
+    @Nested
+    @DisplayName("throttler type")
+    class Throttler {
+
+        @Test
+        void acceptsTheThreeKnownTypes() {
+            assertEquals("none", CqlSessionProducer.normalizeThrottlerType("none"));
+            assertEquals("concurrency", CqlSessionProducer.normalizeThrottlerType("CONCURRENCY"));
+            assertEquals("rate", CqlSessionProducer.normalizeThrottlerType(" rate "));
+        }
+
+        @Test
+        void aTypoIsRejectedInsteadOfSilentlyDisablingThrottling() {
+            // This used to fall through to the no-op branch: the overload protection you
+            // configured was simply not there, and nothing said so.
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> CqlSessionProducer.normalizeThrottlerType("concurency"));
+
+            assertTrue(error.getMessage().contains("concurency"), error.getMessage());
+            assertTrue(error.getMessage().contains("none, concurrency, rate"), error.getMessage());
+        }
+    }
 }

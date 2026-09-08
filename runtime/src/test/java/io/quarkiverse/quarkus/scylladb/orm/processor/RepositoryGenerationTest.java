@@ -227,6 +227,147 @@ class RepositoryGenerationTest {
         }
 
         @Test
+        void aRepeatedNamedParameterBecomesOneMethodParameter() {
+            // "WHERE a >= :ts AND b >= :ts" emitted byRange(Object ts, Object ts) - a
+            // signature javac rejects, with an error pointing at generated code rather
+            // than at the @Query. One parameter, two markers, the value bound twice.
+            GeneratedSources.Result result = compile("""
+                    @Table("sample")
+                    @Queries(@Query(name = "byRange",
+                            cql = "SELECT * FROM sample WHERE seen >= :ts AND touched >= :ts ALLOW FILTERING",
+                            returnType = ReturnType.LIST,
+                            paramTypes = @Query.Param(name = "ts", type = String.class)))
+                    """, "");
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("byRange(String ts)"), repo);
+            assertTrue(repo.contains("query(query, ts, ts)"), repo);
+        }
+
+        @Test
+        void aRepeatedStructuralParameterIsAlsoDeclaredOnce() {
+            GeneratedSources.Result result = compile("""
+                    @Table("sample")
+                    @Queries(@Query(name = "twice",
+                            cql = "SELECT * FROM sample WHERE name = :name LIMIT :limit /* :limit */",
+                            returnType = ReturnType.LIST))
+                    """, "");
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("twice(String name, Integer limit)"), repo);
+            // One declaration, but still one String.format argument per placeholder.
+            assertTrue(
+                    repo.contains(
+                            "String.format(\"SELECT id, name FROM sample WHERE name = ? LIMIT %s /* %s */\", limit, limit)"),
+                    repo);
+        }
+
+        @Test
+        void aProjectionCanReadACollectionColumn() {
+            // ClassName.bestGuess("java.util.List<java.lang.String>") threw, and the
+            // whole @Query was dropped with "not a valid name: List<java".
+            GeneratedSources.Result result = GeneratedSources.compile(java.util.Map.of(
+                    PKG + ".Tagged", """
+                            package test.model;
+                            import java.util.*;
+                            public record Tagged(UUID id, List<String> tags, Map<String, Integer> counts) {}
+                            """,
+                    PKG + ".Sample", """
+                            package test.model;
+                            import java.util.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.enums.*;
+                            @Table("sample")
+                            @Queries(@Query(name = "tagsOf", cql = "SELECT id, tags, counts FROM sample WHERE id = :id",
+                                    resultClass = Tagged.class, returnType = ReturnType.SINGLE))
+                            public class Sample {
+                                @PartitionKey private UUID id;
+                                private List<String> tags;
+                                private Map<String, Integer> counts;
+                                public UUID getId() { return id; }
+                                public void setId(UUID id) { this.id = id; }
+                                public List<String> getTags() { return tags; }
+                                public void setTags(List<String> t) { this.tags = t; }
+                                public Map<String, Integer> getCounts() { return counts; }
+                                public void setCounts(Map<String, Integer> c) { this.counts = c; }
+                            }
+                            """));
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("row.getList(\"tags\", String.class)"), repo);
+            assertTrue(repo.contains("row.getMap(\"counts\", String.class, Integer.class)"), repo);
+        }
+
+        @Test
+        void anUnsupportedGenericProjectionFieldNamesTheQueryAndTheColumn() {
+            GeneratedSources.Result result = GeneratedSources.compile(java.util.Map.of(
+                    PKG + ".Boxed", """
+                            package test.model;
+                            import java.util.*;
+                            public record Boxed(UUID id, Optional<String> name) {}
+                            """,
+                    PKG + ".Sample", """
+                            package test.model;
+                            import java.util.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.enums.*;
+                            @Table("sample")
+                            @Queries(@Query(name = "boxed", cql = "SELECT id, name FROM sample WHERE id = :id",
+                                    resultClass = Boxed.class, returnType = ReturnType.SINGLE))
+                            public class Sample {
+                                @PartitionKey private UUID id;
+                                private String name;
+                                public UUID getId() { return id; }
+                                public void setId(UUID id) { this.id = id; }
+                                public String getName() { return name; }
+                                public void setName(String n) { this.name = n; }
+                            }
+                            """));
+
+            assertFalse(result.success());
+            assertTrue(result.errorText().contains("boxed"), result.errorText());
+            assertTrue(result.errorText().contains("name"), result.errorText());
+            assertTrue(result.errorText().contains("java.util.Optional"), result.errorText());
+        }
+
+        @Test
+        void aNestedGenericProjectionFieldIsRejectedRatherThanMiscompiled() {
+            // getList takes a Class, so List<List<String>> has nothing to pass — emitting
+            // "java.util.List<java.lang.String>.class" would move the failure into
+            // generated code.
+            GeneratedSources.Result result = GeneratedSources.compile(java.util.Map.of(
+                    PKG + ".Nested", """
+                            package test.model;
+                            import java.util.*;
+                            public record Nested(UUID id, List<List<String>> rows) {}
+                            """,
+                    PKG + ".Sample", """
+                            package test.model;
+                            import java.util.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.enums.*;
+                            @Table("sample")
+                            @Queries(@Query(name = "nested", cql = "SELECT id, rows FROM sample WHERE id = :id",
+                                    resultClass = Nested.class, returnType = ReturnType.SINGLE))
+                            public class Sample {
+                                @PartitionKey private UUID id;
+                                private String name;
+                                public UUID getId() { return id; }
+                                public void setId(UUID id) { this.id = id; }
+                                public String getName() { return name; }
+                                public void setName(String n) { this.name = n; }
+                            }
+                            """));
+
+            assertFalse(result.success());
+            assertTrue(result.errorText().contains("nested"), result.errorText());
+            assertTrue(result.errorText().contains("rows"), result.errorText());
+        }
+
+        @Test
         void limitOneDowngradesAListToASingleResult() {
             GeneratedSources.Result result = compile("""
                     @Table("sample")

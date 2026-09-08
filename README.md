@@ -423,6 +423,9 @@ quarkus.scylla.throttler.max-requests-per-second=5000
 quarkus.scylla.throttler.max-queue-size=10000
 ```
 
+An unrecognised `type` fails at startup rather than falling back to `none` — a typo here
+used to disable the overload protection silently.
+
 ### Complete Configuration Reference
 
 | Property | Description | Default |
@@ -540,6 +543,22 @@ Behaviour changes that need no action:
 - `findAllPaged()`/`queryPaged()` **actually paginate now**. They previously appended a
   `LIMIT`, which caps the whole result set, so the server returned no paging state and
   `hasNextPage()` was always `false`. If you worked around this, remove the workaround.
+- A `@Query` may use the same `:name` more than once (`WHERE seen >= :ts AND touched >= :ts`).
+  It becomes **one** method parameter bound to every marker; before, the generated
+  signature repeated the name and did not compile.
+- A projection (`@Query(resultClass = ...)`) can now read `List`/`Set`/`Map` columns.
+  Before, such a field aborted generation with `not a valid name: List<java`.
+- A lone `Map` argument is read as named parameters only when its keys are actual
+  parameter names of the statement. `execute("UPDATE t SET attrs = ? WHERE ...", someMap)`
+  now binds the map as a value; before it was always taken for named parameters and
+  failed. `query(cql, Map.of("name", "John"))` is unchanged.
+
+Newly rejected input (each was previously accepted and did the wrong thing silently):
+
+| Input | Old behaviour | Now |
+|-------|---------------|-----|
+| `quarkus.scylla.throttler.type` with an unknown value (e.g. a typo) | Fell through to no throttling — the overload protection you configured was simply absent | Startup fails naming the value and the three valid ones |
+| `Pageable` with size < 1 | The driver reads page size 0 as "no paging", so a paged read fetched the whole table in one page | `IllegalArgumentException` at construction |
 
 Source-incompatible changes:
 

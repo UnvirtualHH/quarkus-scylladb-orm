@@ -220,7 +220,6 @@ public abstract class Repository<T, ID> {
      */
     public boolean exists(T entity) {
         String[] pkNames = mapper.getPartitionKeyNames();
-        String[] ckNames = mapper.getClusteringKeyNames();
         String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
                 pkNames[0], tableName, where);
@@ -273,8 +272,6 @@ public abstract class Repository<T, ID> {
     }
 
     public void delete(T entity) {
-        String[] pkNames = mapper.getPartitionKeyNames();
-        String[] ckNames = mapper.getClusteringKeyNames();
         String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("DELETE FROM %s WHERE %s", tableName, where);
         doExecuteWrite(cql, buildKeyParams(mapper, entity));

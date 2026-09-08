@@ -12,6 +12,11 @@ on:
     # extension itself has not changed.
     - cron: '0 4 * * 1'
 
+# Read-only by default: neither workflow writes to the repository, and the
+# repository default may well be read-write.
+permissions:
+  contents: read
+
 concurrency:
   group: native-${{ github.ref }}
   cancel-in-progress: true

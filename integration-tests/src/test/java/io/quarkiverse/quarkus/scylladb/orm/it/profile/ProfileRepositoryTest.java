@@ -127,4 +127,29 @@ class ProfileRepositoryTest {
         assertEquals(Profile.Tier.FREE, found.getTier());
         assertEquals(List.of("gamma"), found.getTags());
     }
+
+    @Test
+    @Order(8)
+    void aLoneMapArgumentBindsAsAValueWhenItsKeysAreNotParameterNames() {
+        // A single Map argument was always read as "named parameters", so a statement
+        // with one marker over a map<,> column could not be bound at all: the map's own
+        // entries were taken for parameter names and the driver rejected the first one.
+        profileRepository.execute(
+                "UPDATE profile SET attributes = ? WHERE id = " + ID,
+                Map.of("locale", "fr"));
+
+        Profile found = profileRepository.findById(ID);
+        assertNotNull(found);
+        assertEquals(Map.of("locale", "fr"), found.getAttributes());
+    }
+
+    @Test
+    @Order(9)
+    void aLoneMapArgumentStillBindsByNameWhenItsKeysAreParameterNames() {
+        List<Profile> found = profileRepository.query(
+                "SELECT * FROM profile WHERE id = :id", Map.of("id", ID));
+
+        assertEquals(1, found.size());
+        assertEquals(ID, found.get(0).getId());
+    }
 }

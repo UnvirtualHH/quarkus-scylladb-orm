@@ -188,7 +188,7 @@ public class CqlSessionProducer {
 
     private void configureThrottler(ProgrammaticDriverConfigLoaderBuilder loader,
             ScyllaOrmConfig.ThrottlerConfig throttler) {
-        switch (throttler.type().toLowerCase(java.util.Locale.ROOT)) {
+        switch (normalizeThrottlerType(throttler.type())) {
             case "concurrency" -> {
                 loader.withString(DefaultDriverOption.REQUEST_THROTTLER_CLASS,
                         "ConcurrencyLimitingRequestThrottler");
@@ -210,6 +210,23 @@ public class CqlSessionProducer {
                 // "none" → driver default PassThroughRequestThrottler (no throttling).
             }
         }
+    }
+
+    /**
+     * Lower-cases the configured throttler type and rejects anything unrecognised.
+     * <p>
+     * A typo used to fall through to the no-op branch, so {@code concurency} silently
+     * disabled exactly the overload protection that had been configured — and nothing
+     * said so until the cluster was already saturated.
+     */
+    static String normalizeThrottlerType(String type) {
+        String normalized = type == null ? "" : type.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "none", "concurrency", "rate" -> normalized;
+            default -> throw new IllegalArgumentException(
+                    "Unknown 'quarkus.scylla.throttler.type': '" + type
+                            + "'. Expected one of: none, concurrency, rate.");
+        };
     }
 
     static SSLContext buildSslContext(ScyllaOrmConfig.SslConfig sslConfig) {
@@ -250,7 +267,9 @@ public class CqlSessionProducer {
     }
 
     static String detectStoreType(String path) {
-        return path.toLowerCase().endsWith(".p12") || path.toLowerCase().endsWith(".pfx")
+        // Locale.ROOT: the default locale must not decide how a file path is read.
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".p12") || lower.endsWith(".pfx")
                 ? "PKCS12"
                 : "JKS";
     }
