@@ -20,8 +20,13 @@
     <url>https://github.com/UnvirtualHH/quarkus-scylladb-orm</url>
 
     <modules>
-        <module>deployment</module>
+        <!-- api -> processor -> runtime -> deployment. The processor needs the mapping
+             annotations, and the runtime needs the interfaces generated code implements;
+             keeping all three in one artifact made that a cycle. -->
+        <module>api</module>
+        <module>processor</module>
         <module>runtime</module>
+        <module>deployment</module>
     </modules>
 
     <scm>
