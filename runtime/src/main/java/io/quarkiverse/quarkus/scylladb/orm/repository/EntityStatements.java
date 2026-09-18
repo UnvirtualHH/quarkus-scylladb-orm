@@ -7,6 +7,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapper;
+import io.quarkiverse.quarkus.scylladb.orm.repository.util.Sortable;
 
 /**
  * The CQL an entity's repository needs, derived once from its mapper.
@@ -45,12 +46,16 @@ final class EntityStatements {
     /** {@code pk = ? AND ... AND ck = ?} over the full primary key. */
     final String whereFullKey;
 
+    /** The partition key columns, in ordinal order. */
+    private final String[] partitionKeys;
+
     private EntityStatements(String tableName, EntityMapper<?> mapper) {
         this.allColumns = mapper.getColumnNames();
         this.columnList = String.join(", ", allColumns);
 
         String[] pkNames = mapper.getPartitionKeyNames();
         String[] ckNames = mapper.getClusteringKeyNames();
+        this.partitionKeys = pkNames;
         List<String> keyNames = Stream.concat(Arrays.stream(pkNames), Arrays.stream(ckNames)).toList();
 
         List<String> nonKey = new ArrayList<>(allColumns.length);
@@ -91,5 +96,44 @@ final class EntityStatements {
             throw new IllegalStateException("No primary key columns defined for table " + tableName);
         }
         return whereFullKey;
+    }
+
+    /**
+     * The first partition key column, used by the existence checks as a cheap projection.
+     * <p>
+     * Indexing straight into the array threw {@code ArrayIndexOutOfBoundsException} for an
+     * entity that declares only {@code @ClusteringKey} fields — a table that cannot exist
+     * in Scylla, but the resulting error named neither the entity nor the missing
+     * annotation. The processor now rejects such an entity at build time; this stays as
+     * the guard for a hand-written {@code EntityMapper}.
+     */
+    String requireFirstPartitionKey(String tableName) {
+        if (partitionKeys.length == 0) {
+            throw new IllegalStateException(
+                    "No @PartitionKey columns defined for table " + tableName
+                            + ". Every Scylla table needs at least one partition key column.");
+        }
+        return partitionKeys[0];
+    }
+
+    /**
+     * Rejects a {@link Sortable} on a statement that does not restrict the partition key.
+     * <p>
+     * CQL only allows {@code ORDER BY} once the partition key is restricted by {@code =}
+     * or {@code IN}, because rows are only ordered <em>within</em> a partition. A full
+     * table scan therefore can never honour one, and the server rejected the statement
+     * with a message about the query rather than about the argument that caused it.
+     * Scoped queries — {@code queryPaged} with a partition-restricted CQL — are
+     * unaffected.
+     */
+    static void rejectSortOnUnrestrictedScan(Sortable sortable, String method) {
+        if (sortable == null || sortable.toCql().isEmpty()) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                method + " scans the whole table and cannot apply ORDER BY " + sortable.column()
+                        + ": CQL only permits ORDER BY when the partition key is restricted by = or IN, "
+                        + "since rows are only ordered within a partition. Pass null, or use "
+                        + "queryPaged(...) with a CQL statement that restricts the partition key.");
     }
 }

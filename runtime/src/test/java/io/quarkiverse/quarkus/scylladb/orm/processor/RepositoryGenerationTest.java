@@ -380,4 +380,69 @@ class RepositoryGenerationTest {
             assertTrue(repo.contains("querySingle("), repo);
         }
     }
+
+    @Nested
+    @DisplayName("parameter binding")
+    class ParameterBinding {
+
+        @Test
+        void aColumnNamedSortCanBeQueriedWithAnExplicitBoundBinding() {
+            // Without the override :sort was interpolated and then rejected by the
+            // "column ASC/DESC" format check, so the column could not be queried at all.
+            GeneratedSources.Result result = GeneratedSources.compile(PKG + ".Sample", """
+                    package test.model;
+                    import java.util.UUID;
+                    import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+                    import io.quarkiverse.quarkus.scylladb.orm.enums.*;
+
+                    @Table("sample")
+                    @Queries(@Query(
+                        name = "bySort",
+                        cql = "SELECT id, sort FROM sample WHERE sort = :sort",
+                        returnType = ReturnType.LIST,
+                        paramTypes = @Query.Param(
+                            name = "sort", type = String.class, binding = Query.Binding.BOUND)))
+                    public class Sample {
+                        @PartitionKey private UUID id;
+                        private String sort;
+                        public UUID getId() { return id; }
+                        public void setId(UUID id) { this.id = id; }
+                        public String getSort() { return sort; }
+                        public void setSort(String s) { this.sort = s; }
+                    }
+                    """);
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("WHERE sort = ?"), repo);
+            assertFalse(repo.contains("String.format"), "a bound parameter must not be interpolated:\n" + repo);
+        }
+
+        @Test
+        void sortIsStillInterpolatedWithoutAnOverride() {
+            GeneratedSources.Result result = compile(
+                    """
+                            @Table("sample")
+                            @Queries(@Query(name = "sorted",                             cql = "SELECT id, name FROM sample WHERE id = :id ORDER BY :sort",                             returnType = ReturnType.LIST))
+                            """,
+                    "");
+
+            assertTrue(result.success(), result.errorText());
+            assertTrue(result.source(PKG + ".SampleBaseRepository").contains("String.format"),
+                    result.source(PKG + ".SampleBaseRepository"));
+        }
+
+        @Test
+        void aStructuralOffsetIsRejectedBecauseCqlHasNone() {
+            GeneratedSources.Result result = compile(
+                    """
+                            @Table("sample")
+                            @Queries(@Query(name = "paged",                             cql = "SELECT id, name FROM sample WHERE id = :id LIMIT :limit OFFSET :offset",                             returnType = ReturnType.LIST))
+                            """,
+                    "");
+
+            assertFalse(result.success());
+            assertTrue(result.errorText().contains("OFFSET"), result.errorText());
+        }
+    }
 }

@@ -2,7 +2,6 @@ package io.quarkiverse.quarkus.scylladb.orm.deployment;
 
 import io.quarkiverse.quarkus.scylladb.orm.config.ScyllaOrmConfig;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapperRegistry;
-import io.quarkiverse.quarkus.scylladb.orm.processor.TypeHandlerRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.repository.ReactiveRepositoryRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.repository.RepositoryRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.runtime.CqlSessionProducer;
@@ -32,7 +31,11 @@ class ScyllaDBOrmProcessor {
     void registerBeans(BuildProducer<AdditionalBeanBuildItem> additionalBeans) {
         additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(CqlSessionProducer.class));
         additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(EntityMapperRegistry.class));
-        additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(TypeHandlerRegistry.class));
+        // Deliberately NOT TypeHandlerRegistry: it is a final utility class with a
+        // private constructor that only ever runs inside javac during annotation
+        // processing. Registering it as a bean asked ArC to proxy something unproxyable
+        // and, worse, made the whole compile-time code-generation package reachable at
+        // runtime — so GraalVM had to keep it (and JavaPoet) in the native image.
         additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(RepositoryRegistry.class));
         additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(ReactiveRepositoryRegistry.class));
     }

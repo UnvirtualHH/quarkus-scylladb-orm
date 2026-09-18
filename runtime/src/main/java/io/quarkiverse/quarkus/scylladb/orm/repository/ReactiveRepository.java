@@ -102,10 +102,20 @@ public abstract class ReactiveRepository<T, ID> {
         return executeQueryForList(cql);
     }
 
+    /**
+     * The rows of one page of an unordered full-table scan.
+     * <p>
+     * {@code sortable} must be {@code null}: this statement does not restrict the
+     * partition key, and CQL only allows {@code ORDER BY} when it is — rows are ordered
+     * within a partition, not across the table. The parameter is kept so the signature
+     * stays source-compatible, and a non-null value is now rejected here instead of by
+     * the server. Sort with {@code queryPaged(...)} over a partition-scoped statement.
+     *
+     * @throws IllegalArgumentException if {@code sortable} names a column
+     */
     public Multi<T> findAll(Pageable pageable, Sortable sortable) {
-        String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT %s FROM %s %s LIMIT ?",
-                statements.columnList, tableName, sortClause);
+        EntityStatements.rejectSortOnUnrestrictedScan(sortable, "findAll(Pageable, Sortable)");
+        String cql = String.format("SELECT %s FROM %s LIMIT ?", statements.columnList, tableName);
 
         return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable, pageable.size()))
                 .onItem().transformToMulti(
@@ -114,8 +124,8 @@ public abstract class ReactiveRepository<T, ID> {
     }
 
     public Uni<Paged<T>> findAllPaged(Pageable pageable, Sortable sortable) {
-        String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT %s FROM %s %s", statements.columnList, tableName, sortClause);
+        EntityStatements.rejectSortOnUnrestrictedScan(sortable, "findAllPaged(Pageable, Sortable)");
+        String cql = String.format("SELECT %s FROM %s", statements.columnList, tableName);
 
         return Uni.createFrom().completionStage(() -> prepareAndExecutePaged(cql, pageable))
                 .map(this::toPage);
@@ -151,10 +161,9 @@ public abstract class ReactiveRepository<T, ID> {
      * Uses LIMIT 1 instead of COUNT for optimal ScyllaDB performance.
      */
     public Uni<Boolean> exists(T entity) {
-        String[] pkNames = mapper.getPartitionKeyNames();
         String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
-                pkNames[0], tableName, where);
+                statements.requireFirstPartitionKey(tableName), tableName, where);
         return runScalarQuery(cql, row -> Boolean.TRUE, buildKeyParams(entity))
                 .map(result -> result != null);
     }

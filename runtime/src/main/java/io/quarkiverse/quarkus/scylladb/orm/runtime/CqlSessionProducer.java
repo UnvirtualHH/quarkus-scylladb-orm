@@ -335,7 +335,12 @@ public class CqlSessionProducer {
                     "Invalid contact point: '" + contactPoint + "'. Port must be between 1 and 65535, got: " + port);
         }
 
-        return new InetSocketAddress(host, port);
+        // createUnresolved, not new InetSocketAddress(...): the latter performs DNS
+        // resolution once, here, and pins the result for the lifetime of the session.
+        // Behind a Kubernetes service name or any other DNS record that moves, the
+        // driver would keep reconnecting to an address that no longer serves. Left
+        // unresolved, the name is resolved again on every connection attempt.
+        return InetSocketAddress.createUnresolved(host, port);
     }
 
     @PreDestroy

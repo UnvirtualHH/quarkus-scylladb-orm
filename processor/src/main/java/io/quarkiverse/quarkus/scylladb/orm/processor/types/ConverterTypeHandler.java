@@ -2,8 +2,9 @@ package io.quarkiverse.quarkus.scylladb.orm.processor.types;
 
 import static io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil.*;
 
+import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
+import java.util.Set;
 
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
@@ -20,6 +21,7 @@ import com.palantir.javapoet.FieldSpec;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Convert;
 import io.quarkiverse.quarkus.scylladb.orm.processor.TypeHandler;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil;
 
 /**
  * Handles fields annotated with @Convert(...)
@@ -93,15 +95,11 @@ public class ConverterTypeHandler implements TypeHandler {
 
     /**
      * Derived from the converter type, not the field, so two fields sharing a converter
-     * also share the constant.
+     * also share the constant — and from its <em>fully qualified</em> name, so two
+     * converters that merely share a simple name do not.
      */
     private static String converterFieldName(TypeMirror converterType) {
-        String simpleName = converterType.toString();
-        int lastDot = simpleName.lastIndexOf('.');
-        if (lastDot >= 0) {
-            simpleName = simpleName.substring(lastDot + 1);
-        }
-        return simpleName.replace('.', '_').toUpperCase(Locale.ROOT);
+        return constantNameFor(converterType.toString());
     }
 
     private TypeMirror getConverterType(VariableElement field) {
@@ -114,33 +112,53 @@ public class ConverterTypeHandler implements TypeHandler {
     }
 
     /**
-     * Extracts the CQL type (second generic parameter) from AttributeConverter<EntityType, CqlType>.
-     * Falls back to Object if the type cannot be determined.
+     * Extracts the CQL type (second type argument) from
+     * {@code AttributeConverter<EntityType, CqlType>}.
+     * <p>
+     * Walks the whole supertype chain, not just the converter's own interface list: a
+     * converter that inherits the interface from an abstract base class used to fall
+     * through to the {@code Object} fallback, and the mapper then emitted
+     * {@code row.get(column, Object.class)} — which fails at runtime with
+     * {@code CodecNotFoundException}, far from the converter that caused it.
+     *
+     * @throws IllegalArgumentException if the type argument cannot be determined, so the
+     *         problem is reported against the entity at build time instead
      */
     private ClassName extractCqlType(TypeMirror converterType) {
-        if (!(converterType instanceof DeclaredType declaredType)) {
-            return ClassName.get(Object.class);
+        ClassName cqlType = findCqlType(converterType, new HashSet<>());
+        if (cqlType != null) {
+            return cqlType;
         }
+        throw new IllegalArgumentException("@Convert converter " + converterType
+                + " does not resolve to a concrete " + ATTRIBUTE_CONVERTER_FQN
+                + "<EntityType, CqlType>. Implement the interface with both type arguments spelled out "
+                + "(a raw or still-generic converter gives the mapper no column type to read).");
+    }
 
+    /** Depth-first search over superclasses and interfaces, guarding against cycles. */
+    private ClassName findCqlType(TypeMirror type, Set<String> visited) {
+        if (!(type instanceof DeclaredType declaredType)) {
+            return null;
+        }
         TypeElement typeElement = (TypeElement) declaredType.asElement();
-
-        // Look through all interfaces implemented by the converter
-        for (TypeMirror iface : typeElement.getInterfaces()) {
-            if (!(iface instanceof DeclaredType ifaceDeclared)) {
-                continue;
-            }
-
-            String ifaceName = ((TypeElement) ifaceDeclared.asElement()).getQualifiedName().toString();
-            if (ATTRIBUTE_CONVERTER_FQN.equals(ifaceName)) {
-                List<? extends TypeMirror> typeArgs = ifaceDeclared.getTypeArguments();
-                if (typeArgs.size() >= 2) {
-                    TypeMirror cqlType = typeArgs.get(1);
-                    return ClassName.bestGuess(cqlType.toString());
-                }
-            }
+        if (!visited.add(typeElement.getQualifiedName().toString())) {
+            return null;
         }
 
-        // Fallback to Object if we can't determine the type
-        return ClassName.get(Object.class);
+        if (ATTRIBUTE_CONVERTER_FQN.equals(typeElement.getQualifiedName().toString())) {
+            List<? extends TypeMirror> typeArgs = declaredType.getTypeArguments();
+            if (typeArgs.size() >= 2 && MapperUtil.isRawClass(typeArgs.get(1))) {
+                return ClassName.bestGuess(typeArgs.get(1).toString());
+            }
+            return null;
+        }
+
+        for (TypeMirror iface : typeElement.getInterfaces()) {
+            ClassName found = findCqlType(iface, visited);
+            if (found != null) {
+                return found;
+            }
+        }
+        return findCqlType(typeElement.getSuperclass(), visited);
     }
 }

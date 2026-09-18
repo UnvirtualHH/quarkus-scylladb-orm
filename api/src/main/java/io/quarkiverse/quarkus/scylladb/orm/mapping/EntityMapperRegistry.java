@@ -18,7 +18,10 @@ public class EntityMapperRegistry {
      * Called by generated mappers in @PostConstruct.
      */
     public <T> void registerSelf(Class<T> type, EntityMapper<T> mapper) {
-        registry.put(type, mapper);
+        // putIfAbsent, not put: matches the repository registries, and keeps the first
+        // registration authoritative instead of letting a later one silently replace a
+        // mapper that repositories may already hold a reference to.
+        registry.putIfAbsent(type, mapper);
     }
 
     /**

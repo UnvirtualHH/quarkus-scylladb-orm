@@ -24,6 +24,7 @@ import com.palantir.javapoet.*;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields.KeyField;
 
 public class MapperGenerator {
@@ -137,6 +138,19 @@ public class MapperGenerator {
                     || typeString.startsWith("java.util.Map")) {
 
                 String varName = field.getSimpleName().toString() + "Val";
+                boolean isMap = typeString.startsWith("java.util.Map");
+                // The typed accessors take Class objects, so every element type has to be
+                // one. A raw List used to blow up here with an IndexOutOfBoundsException
+                // out of the annotation processor ("threw an uncaught exception"), and a
+                // List<List<String>> or List<? extends Foo> emitted `List<String>.class`,
+                // which does not compile — with the error pointing at generated source.
+                if (!MapperUtil.hasClassLiteralTypeArguments(field.asType(), isMap ? 2 : 1)) {
+                    throw new IllegalArgumentException("field '" + field.getSimpleName() + "' of type "
+                            + typeString + " cannot be mapped: collection columns need concrete, non-generic "
+                            + "element types (List<String>, Set<UUID>, Map<String, Integer>). A raw collection, "
+                            + "a wildcard or a nested generic has no element class to read. Use a concrete "
+                            + "element type, an @Convert converter, or mark the field @Transient.");
+                }
                 var typeArgs = ((DeclaredType) field.asType()).getTypeArguments();
 
                 if (typeString.startsWith("java.util.List")) {

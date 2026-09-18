@@ -3,7 +3,6 @@ package io.quarkiverse.quarkus.scylladb.orm.processor.types;
 import static io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil.*;
 
 import java.util.List;
-import java.util.Locale;
 
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.VariableElement;
@@ -91,13 +90,13 @@ public class EnumTypeHandler implements TypeHandler {
                 .build();
     }
 
-    /** Derived from the enum type so two fields of the same enum share the constant. */
+    /**
+     * Derived from the enum type so two fields of the same enum share the constant — and
+     * from its <em>fully qualified</em> name, so two enums that merely share a simple
+     * name (an {@code a.Status} and a {@code b.Status} on the same entity) do not collapse
+     * into one constant holding the wrong {@code values()} array.
+     */
     private static String valuesFieldName(VariableElement field) {
-        String simpleName = field.asType().toString();
-        int lastDot = simpleName.lastIndexOf('.');
-        if (lastDot >= 0) {
-            simpleName = simpleName.substring(lastDot + 1);
-        }
-        return simpleName.replace('.', '_').toUpperCase(Locale.ROOT) + "_VALUES";
+        return constantNameFor(field.asType().toString()) + "_VALUES";
     }
 }

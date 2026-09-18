@@ -18,7 +18,8 @@ A high-performance Quarkus extension for ScyllaDB/Cassandra that provides annota
 
 ## Requirements
 
-- Java 21+
+- **Java 25+** — the published artifacts are compiled with `--release 25` (class file
+  version 69). On an older JDK they fail to load with `UnsupportedClassVersionError`.
 - Quarkus 3.x
 - ScyllaDB or Apache Cassandra
 
@@ -212,10 +213,24 @@ if (page1.hasNextPage()) {
 
 ### With Sorting
 
+CQL only allows `ORDER BY` when the partition key is restricted by `=` or `IN`, because
+rows are only ordered *within* a partition. So sorting works on a partition-scoped query,
+not on a full scan — `findAll`/`findAllPaged` reject a non-null `Sortable` for that reason:
+
 ```java
-Sortable sort = Sortable.desc("created_at");
-Paged<Person> page = personRepository.findAllPaged(pageable, sort);
+Sortable sort = Sortable.desc("occurred_at");
+
+Paged<Event> page = eventRepository.queryPaged(
+        "SELECT tenant, device_id, occurred_at, payload FROM event "
+                + "WHERE tenant = :tenant AND device_id = :deviceId",
+        Map.of("tenant", tenant, "deviceId", deviceId),
+        Pageable.ofSize(20),
+        sort);
 ```
+
+The sort column must be a clustering column of that table; `Sortable` validates the name
+against `[A-Za-z_][A-Za-z0-9_]*` before it reaches the statement, since it is interpolated
+rather than bound.
 
 ## Custom Queries
 
@@ -343,9 +358,10 @@ quarkus.scylla.request.timeout=2s
 # Options: ANY, ONE, TWO, THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, LOCAL_SERIAL, LOCAL_ONE
 quarkus.scylla.request.consistency=LOCAL_QUORUM
 
-# Serial consistency for LWT (default: SERIAL)
+# Serial consistency for LWT (default: LOCAL_SERIAL, matching the LOCAL_QUORUM default
+# above — SERIAL makes every LWT a cross-DC round trip)
 # Options: SERIAL, LOCAL_SERIAL
-quarkus.scylla.request.serial-consistency=SERIAL
+quarkus.scylla.request.serial-consistency=LOCAL_SERIAL
 
 # Default page size for queries (default: 5000)
 quarkus.scylla.request.page-size=5000
@@ -442,7 +458,7 @@ used to disable the overload protection silently.
 | `quarkus.scylla.pool.connection-init-timeout` | Connection init timeout | `5s` |
 | `quarkus.scylla.request.timeout` | Request timeout | `2s` |
 | `quarkus.scylla.request.consistency` | Default consistency level | `LOCAL_QUORUM` |
-| `quarkus.scylla.request.serial-consistency` | Serial consistency for LWT | `SERIAL` |
+| `quarkus.scylla.request.serial-consistency` | Serial consistency for LWT | `LOCAL_SERIAL` |
 | `quarkus.scylla.request.page-size` | Default page size | `5000` |
 | `quarkus.scylla.ssl.enabled` | Enable SSL/TLS | `false` |
 | `quarkus.scylla.ssl.truststore-path` | Path to truststore | - |
@@ -564,6 +580,14 @@ Newly rejected input (each was previously accepted and did the wrong thing silen
 |-------|---------------|-----|
 | `quarkus.scylla.throttler.type` with an unknown value (e.g. a typo) | Fell through to no throttling — the overload protection you configured was simply absent | Startup fails naming the value and the three valid ones |
 | `Pageable` with size < 1 | The driver reads page size 0 as "no paging", so a paged read fetched the whole table in one page | `IllegalArgumentException` at construction |
+| An entity with no `@PartitionKey` | Generated fine, then threw `ArrayIndexOutOfBoundsException` out of `exists()` at the first call | Build error against the entity |
+| Two fields mapping to the same column (including a field shadowing an inherited one) | The generated `INSERT` listed the column twice and Scylla rejected it, naming neither field | Build error naming both fields |
+| Two `@PartitionKey`/`@ClusteringKey` fields sharing an `ordinal` | The key order was left to field order, so `findByKeys` could bind arguments to the wrong columns | Build error naming the ordinal |
+| A key field also annotated `@Transient`, or a field that is both `@PartitionKey` and `@ClusteringKey` | The mapper and the WHERE clause disagreed about the key | Build error |
+| A raw, wildcard or nested-generic collection field (`List`, `List<? extends X>`, `List<List<String>>`) | Crashed the annotation processor ("threw an uncaught exception") or emitted `List<String>.class`, which does not compile | Build error naming the field |
+| An `@Convert` converter whose CQL type cannot be resolved | Fell back to `row.get(col, Object.class)` and failed at runtime with `CodecNotFoundException` | Build error. A converter inheriting `AttributeConverter` from a base class now resolves correctly instead of hitting this at all. |
+| A structural `:offset` in `@Query` | Interpolated into a clause the server rejects — CQL has no `OFFSET` | Build error pointing at `queryPaged` |
+| `findAll(Pageable, Sortable)` / `findAllPaged(Pageable, Sortable)` with a non-null `Sortable` | Built `SELECT ... ORDER BY ...` with no `WHERE`, which Scylla always rejects — the argument could never work | `IllegalArgumentException` explaining that `ORDER BY` needs a restricted partition key |
 
 Source-incompatible changes:
 
@@ -574,6 +598,47 @@ Source-incompatible changes:
 | `query`/`querySingle`/`queryScalar`/`execute`/`queryProjection` lost their 1/2/3-argument overloads | The varargs overload covers them; no call site should need changing. |
 | `EntityMapper` gained `getColumnNames()` | Only affects hand-written mappers; generated ones are regenerated. |
 | `GeneratedValue.Strategy.SEQUENCE` removed | It was never implemented and silently did nothing. Use `UUID` or assign the value yourself. |
+| `quarkus.scylla.request.serial-consistency` now defaults to `LOCAL_SERIAL` (was `SERIAL`) | Matches the DC-local `consistency` default, so an LWT no longer pays a cross-DC round trip while every other statement stays local. Set `SERIAL` explicitly if you need LWTs to linearize across datacenters. |
+| Contact points are no longer resolved at startup | They are passed to the driver unresolved, so a DNS name is resolved again on every connection attempt instead of being pinned for the life of the session. Nothing to change; behind a Kubernetes service name this is the difference between reconnecting and not. |
+| The extension is now three artifacts: `-api`, `-processor` and the runtime | Nothing to change — `quarkus-scylladb-orm` still pulls both in. See *Module layout* below. |
+
+#### Overriding how a `@Query` parameter is bound
+
+Parameters named `limit`, `order`, `orderby` or `sort` are interpolated into the CQL
+rather than bound, because CQL has no bind marker for a column name in `ORDER BY`. That
+heuristic used to be absolute, so an entity with a column actually called `sort` could not
+query it. `@Query.Param` now takes a `binding`:
+
+```java
+@Query(name = "bySort",
+       cql = "SELECT id, sort FROM sample WHERE sort = :sort",
+       returnType = ReturnType.LIST,
+       paramTypes = @Query.Param(name = "sort", type = String.class,
+                                 binding = Query.Binding.BOUND))
+```
+
+`Binding.AUTO` (the default) keeps the name heuristic, `BOUND` always binds as a value,
+`STRUCTURAL` always interpolates — after the same format check.
+
+### Module layout
+
+| Artifact | Contains | On the runtime classpath? |
+|----------|----------|---------------------------|
+| `quarkus-scylladb-orm-api` | `@Table`, `@Column`, … and `EntityMapper` | yes |
+| `quarkus-scylladb-orm-processor` | the annotation processor and JavaPoet | yes, for now |
+| `quarkus-scylladb-orm` | repositories, config, session producer | yes |
+| `quarkus-scylladb-orm-deployment` | Quarkus build steps | no (build time only) |
+
+Depend on `quarkus-scylladb-orm` as before; it pulls in the other two.
+
+The processor only ever runs inside `javac`, so it has no business in a deployed
+application — but Maven has no "annotation processing only" scope, and javac discovers
+processors off the compile classpath. Keeping it at compile scope is what lets adding one
+dependency generate your mappers with no further build configuration. Nothing at runtime
+references it any more, so it and JavaPoet are unreachable for a native image's analysis;
+removing them from JVM mode as well means switching that dependency to `provided` and asking
+applications to declare the processor in `annotationProcessorPaths` themselves. That is a
+breaking change, held for a release that can carry the migration note.
 
 ### Select lists and the entity mapper
 The generated mapper reads **every** mapped field of the entity, so any query that maps
@@ -588,6 +653,18 @@ For `@Query` this is handled at build time:
   columns — it used to compile and then fail at runtime.
 - Projections (`resultClass = MyDto.class`) are left alone; they map only the DTO's own
   fields, so a partial select is exactly right there.
+
+  Note that a projection reads each column by the DTO field's (or record component's)
+  **Java name** — `@Column` on the entity does not apply, because the DTO is a different
+  class. For a snake_case column, alias it in the CQL:
+
+  ```java
+  @Query(name = "summaries",
+         cql = "SELECT full_name AS name, age FROM person",
+         returnType = ReturnType.LIST,
+         resultClass = PersonSummary.class)
+  // record PersonSummary(String name, int age) {}
+  ```
 - Select lists using functions or aliases (`writetime(x)`, `x AS y`) are left alone —
   guessing there would turn working queries into build failures.
 
@@ -604,7 +681,7 @@ the loop — inject the reactive repository, or annotate the caller with
 
 ### Avoid unbounded scans on hot paths
 `findAll()` (no paging) and `count()` perform cluster-wide scans that will time out and
-overload coordinators on large tables. Use `findAll(Pageable, Sortable)`, partition-scoped
+overload coordinators on large tables. Use `findAll(Pageable, null)`, partition-scoped
 `@Query` methods, or a maintained counter table instead.
 
 ### Reactive streams honour backpressure

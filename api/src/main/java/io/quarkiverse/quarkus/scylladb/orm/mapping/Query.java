@@ -29,6 +29,32 @@ public @interface Query {
         String name();
 
         Class<?> type();
+
+        /**
+         * How this parameter reaches the statement. Defaults to {@link Binding#AUTO}, so
+         * declaring a type never changes existing behaviour.
+         */
+        Binding binding() default Binding.AUTO;
+    }
+
+    /**
+     * Whether a {@code :name} marker is bound as a value or interpolated into the
+     * statement text.
+     * <p>
+     * Interpolation exists because CQL has places a bind marker cannot go — {@code ORDER
+     * BY} takes a column name, not a value. Which parameters those are was decided purely
+     * by name ({@code limit}, {@code order}, {@code orderby}, {@code sort}), which is a
+     * good guess and a bad rule: an entity with a column actually called {@code sort}
+     * could not query it, because {@code :sort} was interpolated and then rejected by the
+     * "column ASC/DESC" format check. This makes the guess overridable.
+     */
+    enum Binding {
+        /** Decide by name, as before. */
+        AUTO,
+        /** Interpolate into the CQL text, after the format check for its kind. */
+        STRUCTURAL,
+        /** Bind as an ordinary value, whatever the parameter is called. */
+        BOUND
     }
 
     Class<?> resultClass() default void.class;

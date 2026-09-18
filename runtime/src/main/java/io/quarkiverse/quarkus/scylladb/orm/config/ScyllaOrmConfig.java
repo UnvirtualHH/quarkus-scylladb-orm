@@ -152,8 +152,14 @@ public interface ScyllaOrmConfig {
         /**
          * Serial consistency level for lightweight transactions (LWT).
          * Valid values: SERIAL, LOCAL_SERIAL
+         * <p>
+         * Defaults to {@code LOCAL_SERIAL} to match the DC-local {@code consistency}
+         * default. Paired with {@code SERIAL} instead, every LWT would pay a cross-DC
+         * round trip while all other statements stayed DC-local — an easy way to make
+         * one query type mysteriously slow in a multi-DC cluster. Set {@code SERIAL}
+         * explicitly if you need the LWT to linearize across datacenters.
          */
-        @WithDefault("SERIAL")
+        @WithDefault("LOCAL_SERIAL")
         String serialConsistency();
 
         /**
