@@ -21,7 +21,7 @@
     </description>
 
     <dependencies>
-        <!-- EntityMapper maps a driver Row; KeyComponent carries a driver GenericType. -->
+        <!-- EntityMapper maps a driver Row. -->
         <dependency>
             <groupId>com.scylladb</groupId>
             <artifactId>java-driver-core</artifactId>

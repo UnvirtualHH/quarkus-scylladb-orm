@@ -196,6 +196,34 @@ class MapperGenerationTest {
     }
 
     @Test
+    void generatedMappersAreReflectionFree() {
+        // The generated code must stay reflection-free: nothing from java.lang.reflect,
+        // and none of the driver's ...type.reflect helpers (GenericType/TypeToken) either,
+        // which the key components used to build on every keyed call and never read.
+        String source = mapper("""
+                    @PartitionKey(ordinal = 0) private String tenant;
+                    @PartitionKey(ordinal = 1) private int shard;
+                    @ClusteringKey private UUID id;
+                    private List<String> tags;
+                    public String getTenant() { return tenant; }
+                    public void setTenant(String t) { this.tenant = t; }
+                    public int getShard() { return shard; }
+                    public void setShard(int s) { this.shard = s; }
+                    public UUID getId() { return id; }
+                    public void setId(UUID id) { this.id = id; }
+                    public List<String> getTags() { return tags; }
+                    public void setTags(List<String> v) { this.tags = v; }
+                """);
+
+        assertFalse(source.contains("reflect"), source);
+        assertFalse(source.contains("GenericType"), source);
+        assertFalse(source.contains("TypeToken"), source);
+        assertFalse(source.contains("Class.forName"), source);
+        assertFalse(source.contains("newInstance"), source);
+        assertTrue(source.contains("KeyComponent.of(\"shard\", entity.getShard(), 1)"), source);
+    }
+
+    @Test
     void mappersAreNotFinalSoArcCanProxyThemWithoutBytecodeRewriting() {
         String source = mapper("""
                     @PartitionKey private UUID id;

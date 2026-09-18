@@ -269,12 +269,9 @@ public class MapperGenerator {
         for (KeyField key : keys) {
             var f = key.field();
             String colName = EntityFields.resolveColumnName(f);
-            TypeName boxed = TypeName.get(f.asType()).box();
-            b.addStatement("list.add($T.of($S, $T.of($T.class), entity.$L(), $L))",
+            b.addStatement("list.add($T.of($S, entity.$L(), $L))",
                     ClassName.get("io.quarkiverse.quarkus.scylladb.orm.mapping", "KeyComponent"),
                     colName,
-                    ClassName.get("com.datastax.oss.driver.api.core.type.reflect", "GenericType"),
-                    boxed,
                     getterName(f),
                     key.ordinal());
         }

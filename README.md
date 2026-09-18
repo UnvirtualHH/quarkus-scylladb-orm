@@ -601,6 +601,7 @@ Source-incompatible changes:
 | `Paged` no longer has `totalElements` | It was hard-coded to `-1` on every path. Use `count()` if you really need a total. |
 | `query`/`querySingle`/`queryScalar`/`execute`/`queryProjection` lost their 1/2/3-argument overloads | The varargs overload covers them; no call site should need changing. |
 | `EntityMapper` gained `getColumnNames()` | Only affects hand-written mappers; generated ones are regenerated. |
+| `KeyComponent` lost its `GenericType` (`of(name, type, value, ordinal)` → `of(name, value, ordinal)`, `type()` removed) | Nothing read it; it cost two allocations per key column on every keyed call and was the only `...type.reflect` type in generated code. Only affects hand-written mappers — drop the `GenericType.of(...)` argument. |
 | `GeneratedValue.Strategy.SEQUENCE` removed | It was never implemented and silently did nothing. Use `UUID` or assign the value yourself. |
 | `quarkus.scylla.request.serial-consistency` now defaults to `LOCAL_SERIAL` (was `SERIAL`) | Matches the DC-local `consistency` default, so an LWT no longer pays a cross-DC round trip while every other statement stays local. Set `SERIAL` explicitly if you need LWTs to linearize across datacenters. |
 | Contact points are no longer resolved at startup | They are passed to the driver unresolved, so a DNS name is resolved again on every connection attempt instead of being pinned for the life of the session. Nothing to change; behind a Kubernetes service name this is the difference between reconnecting and not. |
