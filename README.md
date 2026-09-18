@@ -564,6 +564,10 @@ Behaviour changes that need no action:
   signature repeated the name and did not compile.
 - A projection (`@Query(resultClass = ...)`) can now read `List`/`Set`/`Map` columns.
   Before, such a field aborted generation with `not a valid name: List<java`.
+- A projection into a plain class (not a record) now generates. It used to abort with
+  `statement enter $[ followed by statement enter $[` — only record projections worked.
+- Projection fields and record components honour `@Column`, so a `full_name` column can
+  map to a `fullName` component without an alias in the CQL.
 - Reactive `Multi` reads honour backpressure. They previously pushed every row of every
   page into an unbounded buffer as fast as the driver delivered them, so a slow consumer
   did not slow the fetching — it accumulated the whole result set in memory. Pages are
@@ -654,17 +658,20 @@ For `@Query` this is handled at build time:
 - Projections (`resultClass = MyDto.class`) are left alone; they map only the DTO's own
   fields, so a partial select is exactly right there.
 
-  Note that a projection reads each column by the DTO field's (or record component's)
-  **Java name** — `@Column` on the entity does not apply, because the DTO is a different
-  class. For a snake_case column, alias it in the CQL:
+  A projection reads each column by the DTO field's (or record component's) Java name,
+  unless it carries its own `@Column` — the entity's `@Column` mappings do not apply,
+  because the DTO is a different class:
 
   ```java
+  public record PersonSummary(@Column("full_name") String fullName, int age) {}
+
   @Query(name = "summaries",
-         cql = "SELECT full_name AS name, age FROM person",
+         cql = "SELECT full_name, age FROM person",
          returnType = ReturnType.LIST,
          resultClass = PersonSummary.class)
-  // record PersonSummary(String name, int age) {}
   ```
+
+  Aliasing in the CQL (`SELECT full_name AS fullName ...`) works as well.
 - Select lists using functions or aliases (`writetime(x)`, `x AS y`) are left alone —
   guessing there would turn working queries into build failures.
 

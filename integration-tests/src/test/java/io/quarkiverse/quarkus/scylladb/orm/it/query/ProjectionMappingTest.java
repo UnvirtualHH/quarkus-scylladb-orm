@@ -14,6 +14,10 @@ import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 
 import io.quarkiverse.quarkus.scylladb.orm.it.model.BookBaseRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.model.BookSummary;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.Person;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.PersonAddressDto;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.PersonAddressRef;
+import io.quarkiverse.quarkus.scylladb.orm.it.model.PersonBaseRepository;
 import io.quarkiverse.quarkus.scylladb.orm.it.util.ScyllaDbTestResource;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
@@ -28,6 +32,9 @@ public class ProjectionMappingTest {
 
     @Inject
     BookBaseRepository bookRepository;
+
+    @Inject
+    PersonBaseRepository personRepository;
 
     @BeforeEach
     public void clearDatabase() {
@@ -89,6 +96,38 @@ public class ProjectionMappingTest {
 
         assertNotNull(summaries);
         assertTrue(summaries.isEmpty());
+    }
+
+    @Test
+    @Order(6)
+    void projectionReadsTheColumnNamedByColumn() {
+        // PersonAddressRef.addressId is read from address_id via @Column on the record
+        // component; before, it could only be reached with `address_id AS addressId`.
+        Person person = new Person();
+        person.setName("Projected");
+        person.setAddressId(UUID.randomUUID());
+        personRepository.save(person);
+
+        PersonAddressRef ref = personRepository.findAddressRef(person.getId());
+
+        assertNotNull(ref);
+        assertEquals("Projected", ref.name());
+        assertEquals(person.getAddressId(), ref.addressId());
+    }
+
+    @Test
+    @Order(7)
+    void aDtoClassProjectionMapsThroughItsSetters() {
+        Person person = new Person();
+        person.setName("Dto");
+        person.setAddressId(UUID.randomUUID());
+        personRepository.save(person);
+
+        PersonAddressDto dto = personRepository.findAddressDto(person.getId());
+
+        assertNotNull(dto);
+        assertEquals("Dto", dto.getName());
+        assertEquals(person.getAddressId(), dto.getAddressId());
     }
 
     private UUID createTestBook(String title, boolean active) {

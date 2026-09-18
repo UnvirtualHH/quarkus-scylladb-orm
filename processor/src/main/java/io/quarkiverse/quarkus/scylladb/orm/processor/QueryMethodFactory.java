@@ -16,6 +16,7 @@ import javax.lang.model.util.ElementFilter;
 import com.palantir.javapoet.*;
 
 import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Column;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
@@ -831,6 +832,19 @@ final class QueryMethodFactory {
         return mb.build();
     }
 
+    /**
+     * The column a projection field or record component is read from: its
+     * {@code @Column} value, or its Java name.
+     * <p>
+     * It used to be the Java name only. The entity's {@code @Column} mappings cannot help
+     * here — the DTO is a different class — so a {@code full_name} column could only reach
+     * a {@code fullName} component by aliasing it in the CQL.
+     */
+    private static String projectionColumnName(Element element) {
+        Column column = element.getAnnotation(Column.class);
+        return column != null && !column.value().isEmpty() ? column.value() : element.getSimpleName().toString();
+    }
+
     private static CodeBlock buildRecordMapperLambda(
             TypeElement recordType,
             ClassName resultClassName,
@@ -846,9 +860,7 @@ final class QueryMethodFactory {
                 lambda.add(", ");
             }
             RecordComponentElement comp = components.get(i);
-            String name = comp.getSimpleName().toString();
-            TypeMirror type = comp.asType();
-            lambda.add(generateValueExtraction(name, type));
+            lambda.add(generateValueExtraction(projectionColumnName(comp), comp.asType()));
         }
 
         lambda.add(")");
@@ -865,29 +877,35 @@ final class QueryMethodFactory {
                 .filter(f -> !f.getModifiers().contains(Modifier.STATIC))
                 .toList();
 
+        // Plain add(...) with explicit semicolons, never addStatement: this block is
+        // embedded as an argument inside the `return queryProjection(query, <lambda>)`
+        // statement, and JavaPoet rejects a statement opened inside another one
+        // ("statement enter $[ followed by statement enter $["). With addStatement here
+        // every DTO (non-record) projection failed to generate; only records, whose
+        // lambda is a single expression, ever worked.
         CodeBlock.Builder lambda = CodeBlock.builder();
         lambda.add("row -> {\n");
         lambda.indent();
-        lambda.addStatement("$T _result = new $T()", resultClassName, resultClassName);
+        lambda.add("$T _result = new $T();\n", resultClassName, resultClassName);
 
         for (VariableElement field : fields) {
             String name = field.getSimpleName().toString();
             String setter = "set" + MapperUtil.capitalize(name);
             TypeMirror type = field.asType();
-            CodeBlock extraction = generateValueExtraction(name, type);
+            CodeBlock extraction = generateValueExtraction(projectionColumnName(field), type);
 
             if (type.getKind().isPrimitive()) {
-                lambda.addStatement("_result.$L($L)", setter, extraction);
+                lambda.add("_result.$L($L);\n", setter, extraction);
             } else {
                 String varName = name + "Val";
-                lambda.addStatement("var $L = $L", varName, extraction);
+                lambda.add("var $L = $L;\n", varName, extraction);
                 lambda.beginControlFlow("if ($L != null)", varName);
-                lambda.addStatement("_result.$L($L)", setter, varName);
+                lambda.add("_result.$L($L);\n", setter, varName);
                 lambda.endControlFlow();
             }
         }
 
-        lambda.addStatement("return _result");
+        lambda.add("return _result;\n");
         lambda.unindent();
         lambda.add("}");
         return lambda.build();
