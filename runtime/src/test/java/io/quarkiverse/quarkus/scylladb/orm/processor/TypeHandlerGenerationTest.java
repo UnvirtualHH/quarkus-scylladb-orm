@@ -184,4 +184,85 @@ class TypeHandlerGenerationTest {
     private static void assertEquals(int expected, int actual, String source) {
         org.junit.jupiter.api.Assertions.assertEquals(expected, actual, source);
     }
+
+    @Test
+    @DisplayName("two enums sharing a simple name keep separate values() constants")
+    void enumsWithTheSameSimpleNameDoNotCollide() {
+        // The constant name used to be derived from the simple name, so a.Status and
+        // b.Status produced one constant. The mapper deduplicates by name, so the second
+        // field silently indexed into the first enum's values() array.
+        String source = mapperFor("""
+                    @Enumerated(EnumType.ORDINAL) private test.a.Status aStatus;
+                    @Enumerated(EnumType.ORDINAL) private test.b.Status bStatus;
+                    public test.a.Status getAStatus() { return aStatus; }
+                    public void setAStatus(test.a.Status s) { this.aStatus = s; }
+                    public test.b.Status getBStatus() { return bStatus; }
+                    public void setBStatus(test.b.Status s) { this.bStatus = s; }
+                """,
+                "test.a.Status", "package test.a;\npublic enum Status { ONE, TWO }\n",
+                "test.b.Status", "package test.b;\npublic enum Status { RED, GREEN, BLUE }\n");
+
+        assertTrue(source.contains("TEST_A_STATUS_VALUES"), source);
+        assertTrue(source.contains("TEST_B_STATUS_VALUES"), source);
+    }
+
+    @Test
+    @DisplayName("two converters sharing a simple name keep separate instances")
+    void convertersWithTheSameSimpleNameDoNotCollide() {
+        String source = mapperFor("""
+                    @Convert(test.a.BoxConverter.class) private String a;
+                    @Convert(test.b.BoxConverter.class) private String b;
+                    public String getA() { return a; }
+                    public void setA(String v) { this.a = v; }
+                    public String getB() { return b; }
+                    public void setB(String v) { this.b = v; }
+                """,
+                "test.a.BoxConverter", """
+                        package test.a;
+                        import io.quarkiverse.quarkus.scylladb.orm.converter.AttributeConverter;
+                        public class BoxConverter implements AttributeConverter<String, String> {
+                            public String toCqlColumn(String a) { return a; }
+                            public String toEntityAttribute(String d) { return d; }
+                        }
+                        """,
+                "test.b.BoxConverter", """
+                        package test.b;
+                        import io.quarkiverse.quarkus.scylladb.orm.converter.AttributeConverter;
+                        public class BoxConverter implements AttributeConverter<String, String> {
+                            public String toCqlColumn(String a) { return a; }
+                            public String toEntityAttribute(String d) { return d; }
+                        }
+                        """);
+
+        assertTrue(source.contains("TEST_A_BOXCONVERTER"), source);
+        assertTrue(source.contains("TEST_B_BOXCONVERTER"), source);
+    }
+
+    @Test
+    @DisplayName("a converter inheriting AttributeConverter from a base class resolves its CQL type")
+    void converterTypeIsFoundThroughASuperclass() {
+        // Only the converter's own interface list used to be searched, so this fell
+        // through to row.get(column, Object.class) and failed at runtime with
+        // CodecNotFoundException.
+        String source = mapperFor("""
+                    @Convert(test.conv.LongConverter.class) private String amount;
+                    public String getAmount() { return amount; }
+                    public void setAmount(String v) { this.amount = v; }
+                """,
+                "test.conv.BaseConverter", """
+                        package test.conv;
+                        import io.quarkiverse.quarkus.scylladb.orm.converter.AttributeConverter;
+                        public abstract class BaseConverter implements AttributeConverter<String, Long> {
+                        }
+                        """,
+                "test.conv.LongConverter", """
+                        package test.conv;
+                        public class LongConverter extends BaseConverter {
+                            public Long toCqlColumn(String a) { return Long.valueOf(a); }
+                            public String toEntityAttribute(Long d) { return String.valueOf(d); }
+                        }
+                        """);
+
+        assertTrue(source.contains("row.get(\"amount\", Long.class)"), source);
+    }
 }

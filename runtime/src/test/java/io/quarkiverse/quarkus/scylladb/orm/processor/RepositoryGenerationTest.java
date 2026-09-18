@@ -380,4 +380,134 @@ class RepositoryGenerationTest {
             assertTrue(repo.contains("querySingle("), repo);
         }
     }
+
+    @Nested
+    @DisplayName("parameter binding")
+    class ParameterBinding {
+
+        @Test
+        void aColumnNamedSortCanBeQueriedWithAnExplicitBoundBinding() {
+            // Without the override :sort was interpolated and then rejected by the
+            // "column ASC/DESC" format check, so the column could not be queried at all.
+            GeneratedSources.Result result = GeneratedSources.compile(PKG + ".Sample", """
+                    package test.model;
+                    import java.util.UUID;
+                    import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+                    import io.quarkiverse.quarkus.scylladb.orm.enums.*;
+
+                    @Table("sample")
+                    @Queries(@Query(
+                        name = "bySort",
+                        cql = "SELECT id, sort FROM sample WHERE sort = :sort",
+                        returnType = ReturnType.LIST,
+                        paramTypes = @Query.Param(
+                            name = "sort", type = String.class, binding = Query.Binding.BOUND)))
+                    public class Sample {
+                        @PartitionKey private UUID id;
+                        private String sort;
+                        public UUID getId() { return id; }
+                        public void setId(UUID id) { this.id = id; }
+                        public String getSort() { return sort; }
+                        public void setSort(String s) { this.sort = s; }
+                    }
+                    """);
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("WHERE sort = ?"), repo);
+            assertFalse(repo.contains("String.format"), "a bound parameter must not be interpolated:\n" + repo);
+        }
+
+        @Test
+        void sortIsStillInterpolatedWithoutAnOverride() {
+            GeneratedSources.Result result = compile(
+                    """
+                            @Table("sample")
+                            @Queries(@Query(name = "sorted",                             cql = "SELECT id, name FROM sample WHERE id = :id ORDER BY :sort",                             returnType = ReturnType.LIST))
+                            """,
+                    "");
+
+            assertTrue(result.success(), result.errorText());
+            assertTrue(result.source(PKG + ".SampleBaseRepository").contains("String.format"),
+                    result.source(PKG + ".SampleBaseRepository"));
+        }
+
+        @Test
+        void aStructuralOffsetIsRejectedBecauseCqlHasNone() {
+            GeneratedSources.Result result = compile(
+                    """
+                            @Table("sample")
+                            @Queries(@Query(name = "paged",                             cql = "SELECT id, name FROM sample WHERE id = :id LIMIT :limit OFFSET :offset",                             returnType = ReturnType.LIST))
+                            """,
+                    "");
+
+            assertFalse(result.success());
+            assertTrue(result.errorText().contains("OFFSET"), result.errorText());
+        }
+    }
+
+    @Nested
+    @DisplayName("projection column names")
+    class ProjectionColumns {
+
+        private GeneratedSources.Result compileWithProjection(String resultClass, String resultSource) {
+            return GeneratedSources.compile(java.util.Map.of(
+                    PKG + "." + resultClass, resultSource,
+                    PKG + ".Sample", """
+                            package test.model;
+                            import java.util.UUID;
+                            import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
+                            import io.quarkiverse.quarkus.scylladb.orm.enums.*;
+
+                            @Table("sample")
+                            @Queries(@Query(name = "summary",
+                                cql = "SELECT id, full_name FROM sample WHERE id = :id",
+                                returnType = ReturnType.SINGLE,
+                                resultClass = %s.class))
+                            public class Sample {
+                                @PartitionKey private UUID id;
+                                @Column("full_name") private String fullName;
+                                public UUID getId() { return id; }
+                                public void setId(UUID id) { this.id = id; }
+                                public String getFullName() { return fullName; }
+                                public void setFullName(String n) { this.fullName = n; }
+                            }
+                            """.formatted(resultClass)));
+        }
+
+        @Test
+        void aRecordComponentReadsTheColumnNamedByColumn() {
+            GeneratedSources.Result result = compileWithProjection("Summary", """
+                    package test.model;
+                    import java.util.UUID;
+                    import io.quarkiverse.quarkus.scylladb.orm.mapping.Column;
+                    public record Summary(UUID id, @Column("full_name") String fullName) {}
+                    """);
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("row.getString(\"full_name\")"), repo);
+            assertTrue(repo.contains("row.getUuid(\"id\")"), "unannotated components keep their Java name:\n" + repo);
+        }
+
+        @Test
+        void aDtoFieldReadsTheColumnNamedByColumn() {
+            GeneratedSources.Result result = compileWithProjection("SummaryDto", """
+                    package test.model;
+                    import java.util.UUID;
+                    import io.quarkiverse.quarkus.scylladb.orm.mapping.Column;
+                    public class SummaryDto {
+                        private UUID id;
+                        @Column("full_name") private String fullName;
+                        public void setId(UUID id) { this.id = id; }
+                        public void setFullName(String n) { this.fullName = n; }
+                    }
+                    """);
+
+            assertTrue(result.success(), result.errorText());
+            String repo = result.source(PKG + ".SampleBaseRepository");
+            assertTrue(repo.contains("row.getString(\"full_name\")"), repo);
+            assertTrue(repo.contains("setFullName("), "the setter still follows the Java name:\n" + repo);
+        }
+    }
 }

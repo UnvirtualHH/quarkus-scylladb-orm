@@ -16,6 +16,7 @@ import javax.lang.model.util.ElementFilter;
 import com.palantir.javapoet.*;
 
 import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Column;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Queries;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
@@ -169,10 +170,11 @@ final class QueryMethodFactory {
         List<String> paramNames = extractParamNames(cql);
         List<String> structuralParams = new ArrayList<>();
         for (String p : paramNames) {
-            if (isStructuralParam(p)) {
+            if (isStructural(p, q)) {
                 structuralParams.add(p);
             }
         }
+        rejectOffset(structuralParams, methodName);
 
         List<String> bindableParams = new ArrayList<>(paramNames);
         bindableParams.removeAll(structuralParams);
@@ -371,6 +373,42 @@ final class QueryMethodFactory {
 
     static boolean isStructuralParam(String name) {
         return STRUCTURAL_PARAMS.contains(name.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether {@code name} is interpolated rather than bound. An explicit
+     * {@code @Query.Param(binding = ...)} wins over the name heuristic, so a column that
+     * happens to be called {@code sort} or {@code limit} can still be queried.
+     */
+    static boolean isStructural(String name, Query q) {
+        for (Query.Param p : q.paramTypes()) {
+            if (p.name().equals(name)) {
+                return switch (p.binding()) {
+                    case STRUCTURAL -> true;
+                    case BOUND -> false;
+                    case AUTO -> isStructuralParam(name);
+                };
+            }
+        }
+        return isStructuralParam(name);
+    }
+
+    /**
+     * CQL has no {@code OFFSET}. A structural {@code :offset} could only ever be
+     * interpolated into a clause the server rejects, so say so here rather than at the
+     * first call in production.
+     */
+    private static void rejectOffset(List<String> structuralParams, String methodName) {
+        for (String p : structuralParams) {
+            if (p.equalsIgnoreCase("offset")) {
+                throw new IllegalArgumentException(
+                        "@Query '" + methodName + "' uses the structural parameter ':" + p + "', but CQL has no "
+                                + "OFFSET clause — Scylla pages with a paging state, not a row offset. Use "
+                                + "queryPaged(...) with a Pageable, or, if this is genuinely a column named '"
+                                + p + "', bind it with @Query.Param(name = \"" + p
+                                + "\", type = ..., binding = Binding.BOUND).");
+            }
+        }
     }
 
     static boolean isSelect(String cql) {
@@ -603,13 +641,17 @@ final class QueryMethodFactory {
             }
         }
 
-        // Special handling for common structural params
+        // Special handling for common structural params. Only when the parameter really
+        // is structural: with binding = BOUND, ':limit' is an ordinary value and its type
+        // comes from the entity field like any other.
         String paramLower = paramName.toLowerCase(Locale.ROOT);
-        if (paramLower.equals("limit") || paramLower.equals("offset")) {
-            return ClassName.get(Integer.class);
-        }
-        if (paramLower.equals("order") || paramLower.equals("orderby") || paramLower.equals("sort")) {
-            return ClassName.get(String.class);
+        if (isStructural(paramName, q)) {
+            if (paramLower.equals("limit") || paramLower.equals("offset")) {
+                return ClassName.get(Integer.class);
+            }
+            if (paramLower.equals("order") || paramLower.equals("orderby") || paramLower.equals("sort")) {
+                return ClassName.get(String.class);
+            }
         }
 
         // Try to match with entity field (case-sensitive)
@@ -790,6 +832,19 @@ final class QueryMethodFactory {
         return mb.build();
     }
 
+    /**
+     * The column a projection field or record component is read from: its
+     * {@code @Column} value, or its Java name.
+     * <p>
+     * It used to be the Java name only. The entity's {@code @Column} mappings cannot help
+     * here — the DTO is a different class — so a {@code full_name} column could only reach
+     * a {@code fullName} component by aliasing it in the CQL.
+     */
+    private static String projectionColumnName(Element element) {
+        Column column = element.getAnnotation(Column.class);
+        return column != null && !column.value().isEmpty() ? column.value() : element.getSimpleName().toString();
+    }
+
     private static CodeBlock buildRecordMapperLambda(
             TypeElement recordType,
             ClassName resultClassName,
@@ -805,9 +860,7 @@ final class QueryMethodFactory {
                 lambda.add(", ");
             }
             RecordComponentElement comp = components.get(i);
-            String name = comp.getSimpleName().toString();
-            TypeMirror type = comp.asType();
-            lambda.add(generateValueExtraction(name, type));
+            lambda.add(generateValueExtraction(projectionColumnName(comp), comp.asType()));
         }
 
         lambda.add(")");
@@ -824,37 +877,38 @@ final class QueryMethodFactory {
                 .filter(f -> !f.getModifiers().contains(Modifier.STATIC))
                 .toList();
 
+        // Plain add(...) with explicit semicolons, never addStatement: this block is
+        // embedded as an argument inside the `return queryProjection(query, <lambda>)`
+        // statement, and JavaPoet rejects a statement opened inside another one
+        // ("statement enter $[ followed by statement enter $["). With addStatement here
+        // every DTO (non-record) projection failed to generate; only records, whose
+        // lambda is a single expression, ever worked.
         CodeBlock.Builder lambda = CodeBlock.builder();
         lambda.add("row -> {\n");
         lambda.indent();
-        lambda.addStatement("$T _result = new $T()", resultClassName, resultClassName);
+        lambda.add("$T _result = new $T();\n", resultClassName, resultClassName);
 
         for (VariableElement field : fields) {
             String name = field.getSimpleName().toString();
             String setter = "set" + MapperUtil.capitalize(name);
             TypeMirror type = field.asType();
-            CodeBlock extraction = generateValueExtraction(name, type);
+            CodeBlock extraction = generateValueExtraction(projectionColumnName(field), type);
 
             if (type.getKind().isPrimitive()) {
-                lambda.addStatement("_result.$L($L)", setter, extraction);
+                lambda.add("_result.$L($L);\n", setter, extraction);
             } else {
                 String varName = name + "Val";
-                lambda.addStatement("var $L = $L", varName, extraction);
+                lambda.add("var $L = $L;\n", varName, extraction);
                 lambda.beginControlFlow("if ($L != null)", varName);
-                lambda.addStatement("_result.$L($L)", setter, varName);
+                lambda.add("_result.$L($L);\n", setter, varName);
                 lambda.endControlFlow();
             }
         }
 
-        lambda.addStatement("return _result");
+        lambda.add("return _result;\n");
         lambda.unindent();
         lambda.add("}");
         return lambda.build();
-    }
-
-    /** Whether a type can be written as {@code X.class}: a class, with no type arguments. */
-    private static boolean isRawClass(TypeMirror type) {
-        return type.getKind() == TypeKind.DECLARED && ((DeclaredType) type).getTypeArguments().isEmpty();
     }
 
     private static CodeBlock generateValueExtraction(String columnName, TypeMirror type) {
@@ -884,7 +938,7 @@ final class QueryMethodFactory {
             // The accessors take a Class, so every element type has to be one — a
             // wildcard or a nested generic (List<List<String>>) has no .class and would
             // emit code that does not compile. Those fall through to the error below.
-            if (typeArgs.stream().allMatch(QueryMethodFactory::isRawClass)) {
+            if (typeArgs.stream().allMatch(MapperUtil::isRawClass)) {
                 if (fqcn.startsWith("java.util.Map<") && typeArgs.size() == 2) {
                     return CodeBlock.of("row.getMap($S, $T.class, $T.class)", columnName,
                             TypeName.get(typeArgs.get(0)).box(), TypeName.get(typeArgs.get(1)).box());

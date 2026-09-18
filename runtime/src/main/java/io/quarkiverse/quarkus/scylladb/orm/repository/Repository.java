@@ -151,6 +151,8 @@ public abstract class Repository<T, ID> {
      * scan that loads the entire table into memory and will overload coordinators / time
      * out on large tables under load. Prefer {@link #findAll(Pageable, Sortable)} or a
      * partition-scoped {@code @Query} in production.
+     *
+     * @see #findAll(Pageable, Sortable) for why its {@code Sortable} must be {@code null}
      */
     public List<T> findAll() {
         String cql = "SELECT " + statements.columnList + " FROM " + tableName;
@@ -160,9 +162,20 @@ public abstract class Repository<T, ID> {
                 .toList();
     }
 
+    /**
+     * One page of an unordered full-table scan.
+     * <p>
+     * {@code sortable} must be {@code null}: this statement does not restrict the
+     * partition key, and CQL only allows {@code ORDER BY} when it is — rows are ordered
+     * within a partition, not across the table. The parameter is kept so the signature
+     * stays source-compatible, and a non-null value is now rejected here instead of by
+     * the server. Sort with {@code queryPaged(...)} over a partition-scoped statement.
+     *
+     * @throws IllegalArgumentException if {@code sortable} names a column
+     */
     public List<T> findAll(Pageable pageable, Sortable sortable) {
-        String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT %s FROM %s %s LIMIT ?", statements.columnList, tableName, sortClause);
+        EntityStatements.rejectSortOnUnrestrictedScan(sortable, "findAll(Pageable, Sortable)");
+        String cql = String.format("SELECT %s FROM %s LIMIT ?", statements.columnList, tableName);
 
         ResultSet rs = doExecutePagedQuery(cql, pageable, pageable.size());
         return StreamSupport.stream(rs.spliterator(), false)
@@ -179,8 +192,8 @@ public abstract class Repository<T, ID> {
      * is driven purely by the statement's page size.
      */
     public Paged<T> findAllPaged(Pageable pageable, Sortable sortable) {
-        String sortClause = (sortable != null) ? sortable.toCql() : "";
-        String cql = String.format("SELECT %s FROM %s %s", statements.columnList, tableName, sortClause);
+        EntityStatements.rejectSortOnUnrestrictedScan(sortable, "findAllPaged(Pageable, Sortable)");
+        String cql = String.format("SELECT %s FROM %s", statements.columnList, tableName);
 
         ResultSet rs = doExecutePagedQuery(cql, pageable);
         return toPage(rs);
@@ -219,10 +232,9 @@ public abstract class Repository<T, ID> {
      * Uses LIMIT 1 instead of COUNT for optimal ScyllaDB performance.
      */
     public boolean exists(T entity) {
-        String[] pkNames = mapper.getPartitionKeyNames();
         String where = statements.requireWhereFullKey(tableName);
         String cql = String.format("SELECT %s FROM %s WHERE %s LIMIT 1",
-                pkNames[0], tableName, where);
+                statements.requireFirstPartitionKey(tableName), tableName, where);
         ResultSet rs = doExecuteQuery(cql, buildKeyParams(mapper, entity));
         return rs.one() != null;
     }

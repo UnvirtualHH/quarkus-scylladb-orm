@@ -82,7 +82,7 @@ nothing on another host; the *ratios* are the point.
 | `handWrittenMap` | 69.4 |
 | `generatedToProperties` | 57.4 |
 | `handWrittenToProperties` | 57.5 |
-| `keyComponents` | 19.7 |
+| `keyComponents` | 11.5 |
 | `keyMetadata` | 5.7 |
 | `streamAllRows` (100 rows/page) | 0.50 ms / 100k rows ≈ 5 ns/row |
 | `streamAllRows` (5000 rows/page) | 0.46 ms / 100k rows ≈ 4.6 ns/row |

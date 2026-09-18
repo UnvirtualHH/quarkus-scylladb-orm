@@ -1,0 +1,63 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+        <artifactId>quarkus-scylladb-orm-parent</artifactId>
+        <version>1.0.12</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>quarkus-scylladb-orm-api</artifactId>
+    <name>Quarkus ScyllaDB ORM - API</name>
+    <description>
+        Entity mapping annotations and the interfaces generated code implements.
+
+        Split out so that the annotation processor can depend on the annotations without
+        the runtime having to depend on the processor: the processor needs @Table,
+        @Column and friends to read an entity, and the runtime needs EntityMapper to use
+        one. With everything in a single artifact the only way to satisfy both was a
+        dependency cycle.
+    </description>
+
+    <dependencies>
+        <!-- EntityMapper maps a driver Row. -->
+        <dependency>
+            <groupId>com.scylladb</groupId>
+            <artifactId>java-driver-core</artifactId>
+            <version>${scylla-driver.version}</version>
+        </dependency>
+
+        <!-- EntityMapperRegistry is an @ApplicationScoped bean. -->
+        <dependency>
+            <groupId>jakarta.enterprise</groupId>
+            <artifactId>jakarta.enterprise.cdi-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- The registry is a bean; index it so Quarkus can see it without relying
+                 solely on the deployment module's AdditionalBeanBuildItem. -->
+            <plugin>
+                <groupId>io.smallrye</groupId>
+                <artifactId>jandex-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>make-index</id>
+                        <goals>
+                            <goal>jandex</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

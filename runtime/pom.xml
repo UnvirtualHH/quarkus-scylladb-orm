@@ -12,22 +12,26 @@
     <name>Quarkus ScyllaDB ORM - Runtime</name>
 
     <dependencies>
+        <!-- The entity annotations and the interfaces generated code implements. -->
         <dependency>
-            <groupId>com.palantir.javapoet</groupId>
-            <artifactId>javapoet</artifactId>
-            <version>${javapoet.version}</version>
+            <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+            <artifactId>quarkus-scylladb-orm-api</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
-        <!-- Only needed to compile the @AutoService annotation on EntityMapperProcessor;
-             the service file itself is written by the processor configured under
-             annotationProcessorPaths below. At compile scope it dragged auto-common,
-             failureaccess, jspecify and error_prone_annotations onto the runtime
-             classpath of every application using this extension. -->
+        <!-- The annotation processor. Compile scope, so that adding this one extension
+             to an application still generates its mappers and repositories with no extra
+             build configuration — javac picks the processor up off the compile classpath.
+             The cost is that the processor and JavaPoet also reach the application's
+             runtime classpath. Nothing at runtime references them any more (see
+             ScyllaDBOrmProcessor#registerBeans), so they are unreachable for a native
+             image; taking them out of JVM mode too means moving this to `provided` and
+             asking applications to declare the processor themselves, which is a breaking
+             change held back for a release that can carry the migration note. -->
         <dependency>
-            <groupId>com.google.auto.service</groupId>
-            <artifactId>auto-service</artifactId>
-            <version>1.1.1</version>
-            <scope>provided</scope>
+            <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+            <artifactId>quarkus-scylladb-orm-processor</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <dependency>
@@ -74,8 +78,6 @@
             <artifactId>jakarta.inject-api</artifactId>
         </dependency>
 
-        <!-- The annotation processor is plain string/regex logic; it is worth testing
-             without spinning up a Quarkus application or a database. -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-junit5</artifactId>
@@ -118,7 +120,7 @@
             </plugin>
 
 
-            <!-- Compiler plugin (optional for AP) -->
+            <!-- Generates the Quarkus config documentation for ScyllaOrmConfig. -->
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <executions>
@@ -130,11 +132,6 @@
                                     <groupId>io.quarkus</groupId>
                                     <artifactId>quarkus-extension-processor</artifactId>
                                     <version>${quarkus.version}</version>
-                                </path>
-                                <path>
-                                    <groupId>com.google.auto.service</groupId>
-                                    <artifactId>auto-service</artifactId>
-                                    <version>1.1.1</version>
                                 </path>
                             </annotationProcessorPaths>
                         </configuration>

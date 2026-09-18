@@ -31,6 +31,12 @@ import javax.tools.ToolProvider;
  * <p>
  * Uses only {@code javax.tools} from the JDK: no compile-testing dependency, and the
  * processor runs inside the surefire JVM so its coverage is measurable.
+ * <p>
+ * Lives in the runtime module rather than next to the processor it drives: the generated
+ * repositories extend {@code Repository} / {@code ReactiveRepository}, so compiling them
+ * needs the runtime classes on the classpath — and the runtime cannot appear on the
+ * processor's, since the processor is already a dependency of the runtime. Tests that
+ * only exercise the processor's own string handling stay in the processor module.
  */
 final class GeneratedSources {
 

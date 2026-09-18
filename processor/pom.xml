@@ -1,0 +1,79 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+        <artifactId>quarkus-scylladb-orm-parent</artifactId>
+        <version>1.0.12</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>quarkus-scylladb-orm-processor</artifactId>
+    <name>Quarkus ScyllaDB ORM - Annotation Processor</name>
+    <description>
+        Build-time code generation: reads @Table entities and emits their mapper and
+        repositories.
+
+        Nothing here runs in a deployed application — it only ever executes inside javac.
+        It lives in its own artifact so that it, and JavaPoet with it, can eventually be
+        dropped from the runtime classpath. Today the runtime still depends on it at
+        compile scope so that adding the extension keeps generating code with no extra
+        setup; making that dependency `provided` is the one change needed to take both
+        out of consuming applications, and is deliberately left for a release that can
+        carry the migration note.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+            <artifactId>quarkus-scylladb-orm-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.palantir.javapoet</groupId>
+            <artifactId>javapoet</artifactId>
+            <version>${javapoet.version}</version>
+        </dependency>
+
+        <!-- Only needed to compile the @AutoService annotation on EntityMapperProcessor;
+             the service file itself is written by the processor configured under
+             annotationProcessorPaths below. -->
+        <dependency>
+            <groupId>com.google.auto.service</groupId>
+            <artifactId>auto-service</artifactId>
+            <version>1.1.1</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- The processor is plain string/regex/javax.lang.model logic; it is worth
+             testing without spinning up a Quarkus application or a database. -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>com.google.auto.service</groupId>
+                                    <artifactId>auto-service</artifactId>
+                                    <version>1.1.1</version>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

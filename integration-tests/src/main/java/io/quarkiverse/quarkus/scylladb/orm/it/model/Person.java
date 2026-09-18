@@ -2,9 +2,14 @@ package io.quarkiverse.quarkus.scylladb.orm.it.model;
 
 import java.util.UUID;
 
+import io.quarkiverse.quarkus.scylladb.orm.enums.ReturnType;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
 
 @Table("person")
+@Queries({
+        @Query(name = "findAddressRef", cql = "SELECT name, address_id FROM person WHERE id = :id", returnType = ReturnType.SINGLE, resultClass = PersonAddressRef.class),
+        @Query(name = "findAddressDto", cql = "SELECT name, address_id FROM person WHERE id = :id", returnType = ReturnType.SINGLE, resultClass = PersonAddressDto.class)
+})
 @GenerateRepository(GenerateRepository.RepositoryType.BOTH)
 public class Person {
 

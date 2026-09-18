@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import java.util.Set;
 
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -277,6 +279,73 @@ class QueryMethodFactoryTest {
                     "SELECT * FROM t WHERE a = :a LIMIT :limit", List.of("a"));
 
             assertEquals("SELECT * FROM t WHERE a = ? LIMIT :limit", result);
+        }
+    }
+
+    @Nested
+    @DisplayName("structural vs bound classification")
+    class BindingOverride {
+
+        /** Minimal @Query stand-in: only paramTypes() is consulted by isStructural. */
+        private Query queryWith(Query.Param... params) {
+            return (Query) java.lang.reflect.Proxy.newProxyInstance(
+                    Query.class.getClassLoader(), new Class<?>[] { Query.class },
+                    (proxy, method, args) -> switch (method.getName()) {
+                        case "paramTypes" -> params;
+                        case "name" -> "q";
+                        case "cql" -> "";
+                        default -> method.getDefaultValue();
+                    });
+        }
+
+        private Query.Param param(String name, Query.Binding binding) {
+            return (Query.Param) java.lang.reflect.Proxy.newProxyInstance(
+                    Query.Param.class.getClassLoader(), new Class<?>[] { Query.Param.class },
+                    (proxy, method, args) -> switch (method.getName()) {
+                        case "name" -> name;
+                        case "binding" -> binding;
+                        default -> method.getDefaultValue();
+                    });
+        }
+
+        @Test
+        void theNameHeuristicStillDecidesByDefault() {
+            Query q = queryWith();
+
+            assertTrue(QueryMethodFactory.isStructural("limit", q));
+            assertTrue(QueryMethodFactory.isStructural("sort", q));
+            assertFalse(QueryMethodFactory.isStructural("tenant", q));
+        }
+
+        @Test
+        void anExplicitBoundBindingWinsOverTheName() {
+            // The point of the escape hatch: an entity with a column actually called
+            // "sort" could not query it, because :sort was interpolated and then rejected
+            // by the "column ASC/DESC" format check.
+            Query q = queryWith(param("sort", Query.Binding.BOUND));
+
+            assertFalse(QueryMethodFactory.isStructural("sort", q));
+        }
+
+        @Test
+        void anExplicitStructuralBindingWinsOverTheName() {
+            Query q = queryWith(param("direction", Query.Binding.STRUCTURAL));
+
+            assertTrue(QueryMethodFactory.isStructural("direction", q));
+        }
+
+        @Test
+        void autoFallsBackToTheHeuristic() {
+            Query q = queryWith(param("sort", Query.Binding.AUTO));
+
+            assertTrue(QueryMethodFactory.isStructural("sort", q));
+        }
+
+        @Test
+        void anUnrelatedParamDeclarationDoesNotChangeOthers() {
+            Query q = queryWith(param("tenant", Query.Binding.BOUND));
+
+            assertTrue(QueryMethodFactory.isStructural("limit", q));
         }
     }
 }
