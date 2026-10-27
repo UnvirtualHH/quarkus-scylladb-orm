@@ -1,5 +1,9 @@
+-- NetworkTopologyStrategy, not SimpleStrategy: ScyllaDB enables tablet replication by
+-- default from 2025 onwards, and tablets reject SimpleStrategy outright
+-- ("SimpleStrategy doesn't support tablet replication"). It is also what any real
+-- deployment uses, so the tests now run against the same replication model as production.
 CREATE KEYSPACE IF NOT EXISTS orm_test
-WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1};
 
 USE orm_test;
 

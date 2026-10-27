@@ -22,7 +22,7 @@ public class ScyllaDbTestResource
 
     @Override
     public Map<String, String> start() {
-        scylla = new ScyllaDBContainer("scylladb/scylla:5.2.10")
+        scylla = new ScyllaDBContainer(ScyllaImage.name())
                 .withExposedPorts(PORT);
 
         scylla.start();

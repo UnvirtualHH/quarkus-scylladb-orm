@@ -33,7 +33,7 @@ import com.datastax.oss.driver.api.core.ssl.ProgrammaticSslEngineFactory;
  */
 public final class TlsScyllaServer implements AutoCloseable {
 
-    private static final String IMAGE = "scylladb/scylla:5.2.10";
+    private static final String IMAGE = ScyllaImage.name();
     private static final int CQL_PORT = 9042;
 
     private final GenericContainer<?> container;
