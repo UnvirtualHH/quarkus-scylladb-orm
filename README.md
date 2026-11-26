@@ -563,6 +563,8 @@ What changed underneath:
 | Quarkus | 3.39.2 → 4.0.1 |
 | CDI | 4.1 → 5.0 (`jakarta.enterprise:jakarta.enterprise.cdi-api` → `jakarta.cdi:jakarta.cdi-api`) |
 | Netty (transitively, via Quarkus) | 4.1.137 → 4.2.20 |
+| ScyllaDB Java driver | 4.19.2.3 → 4.19.4.0 |
+| JavaPoet (build-time only) | 0.22.0 → 0.23.0 |
 | Test artifact | `quarkus-junit5` → `quarkus-junit` |
 
 If your own build declares `jakarta.enterprise:jakarta.enterprise.cdi-api` explicitly,

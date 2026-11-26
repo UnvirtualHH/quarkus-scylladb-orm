@@ -50,10 +50,10 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <quarkus.version>4.0.1</quarkus.version>
-        <javapoet.version>0.22.0</javapoet.version>
+        <javapoet.version>0.23.0</javapoet.version>
         <!-- ScyllaDB shard-aware fork of the Java driver (API-compatible with the
              DataStax/Apache driver, same com.datastax.oss.driver.* packages). -->
-        <scylla-driver.version>4.19.2.3</scylla-driver.version>
+        <scylla-driver.version>4.19.4.0</scylla-driver.version>
     </properties>
 
     <dependencyManagement>
