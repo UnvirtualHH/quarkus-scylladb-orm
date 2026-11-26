@@ -3,7 +3,7 @@
   <parent>
     <artifactId>quarkus-scylladb-orm-parent</artifactId>
     <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
-    <version>1.0.12</version>
+    <version>1.2.0</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>quarkus-scylladb-orm-benchmarks</artifactId>
@@ -34,7 +34,7 @@
       </plugin>
       <plugin>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>3.6.2</version>
         <executions>
           <execution>
             <phase>package</phase>

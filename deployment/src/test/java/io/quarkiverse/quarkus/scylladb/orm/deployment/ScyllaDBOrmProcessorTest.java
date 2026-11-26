@@ -11,7 +11,7 @@ import io.quarkiverse.quarkus.scylladb.orm.config.ScyllaOrmConfig;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapperRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.repository.ReactiveRepositoryRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.repository.RepositoryRegistry;
-import io.quarkus.test.QuarkusUnitTest;
+import io.quarkus.test.QuarkusExtensionTest;
 
 /**
  * The first test in this module. Its build steps used to be covered only as a side
@@ -24,7 +24,7 @@ import io.quarkus.test.QuarkusUnitTest;
 class ScyllaDBOrmProcessorTest {
 
     @RegisterExtension
-    static final QuarkusUnitTest APP = new QuarkusUnitTest()
+    static final QuarkusExtensionTest APP = new QuarkusExtensionTest()
             .overrideConfigKey("quarkus.scylla.contact-points", "127.0.0.1:9042")
             .overrideConfigKey("quarkus.scylla.keyspace", "unit_test");
 

@@ -20,7 +20,8 @@ A high-performance Quarkus extension for ScyllaDB/Cassandra that provides annota
 
 - **Java 25+** — the published artifacts are compiled with `--release 25` (class file
   version 69). On an older JDK they fail to load with `UnsupportedClassVersionError`.
-- Quarkus 3.x
+  (Quarkus 4 itself requires Java 21 and recommends 25.)
+- **Quarkus 4.x.** The last release for Quarkus 3.x is 1.1.1 — see *Upgrading to 1.2.0*.
 - ScyllaDB or Apache Cassandra
 
 ## Installation
@@ -31,7 +32,7 @@ Add the dependency to your `pom.xml`:
 <dependency>
     <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
     <artifactId>quarkus-scylladb-orm</artifactId>
-    <version>1.0.0</version>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -544,6 +545,33 @@ enforce that in the data model (tenant id in the partition key) and in your appl
 tombstones in ScyllaDB), but it also means setting a field to `null` does **not** clear the
 stored value — the column is left untouched. To actively clear a column, issue an explicit
 `UPDATE ... SET col = null` (or `DELETE col`) via `@Query`.
+
+### Upgrading to 1.2.0
+
+**This release requires Quarkus 4.** It will not run on Quarkus 3.x; stay on 1.1.1 if you
+are not migrating yet. Work through the
+[Quarkus 4.0 migration guide](https://github.com/quarkusio/quarkus/wiki/Migration-Guide-4.0)
+for your own code — the notes here only cover this extension.
+
+Nothing in this extension's own API changed. Entities, `@Query` methods, the generated
+repositories and every `quarkus.scylla.*` config key behave exactly as in 1.1.1.
+
+What changed underneath:
+
+| | |
+|---|---|
+| Quarkus | 3.39.2 → 4.0.1 |
+| CDI | 4.1 → 5.0 (`jakarta.enterprise:jakarta.enterprise.cdi-api` → `jakarta.cdi:jakarta.cdi-api`) |
+| Netty (transitively, via Quarkus) | 4.1.137 → 4.2.20 |
+| Test artifact | `quarkus-junit5` → `quarkus-junit` |
+
+If your own build declares `jakarta.enterprise:jakarta.enterprise.cdi-api` explicitly,
+switch it to `jakarta.cdi:jakarta.cdi-api`. The old coordinates still resolve through a
+relocation POM, but warn on every build.
+
+The generated mappers and repositories still carry `@io.quarkus.runtime.Startup`, which
+Quarkus 4 keeps. CDI 5's `@jakarta.enterprise.context.Eager` is a simpler equivalent, but
+switching would raise the floor to CDI 5 for no behavioural gain, so it was left alone.
 
 ### Upgrading to 1.1.0
 
