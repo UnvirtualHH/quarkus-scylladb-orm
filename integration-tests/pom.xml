@@ -5,7 +5,7 @@
     <parent>
         <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
         <artifactId>quarkus-scylladb-orm-parent</artifactId>
-        <version>1.2.0</version>
+        <version>2.0.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>quarkus-scylladb-orm-integration-tests</artifactId>
@@ -79,10 +79,13 @@
                     <compilerArgs>
                         <arg>-parameters</arg>
                     </compilerArgs>
+                    <!-- The processor artifact, not the runtime one: the runtime
+                         depends on it at provided scope, which is not transitive. This is
+                         the same declaration every consuming application needs. -->
                     <annotationProcessorPaths>
                         <path>
                             <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
-                            <artifactId>quarkus-scylladb-orm</artifactId>
+                            <artifactId>quarkus-scylladb-orm-processor</artifactId>
                             <version>${project.version}</version>
                         </path>
                     </annotationProcessorPaths>
