@@ -4,7 +4,7 @@
     <parent>
         <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
         <artifactId>quarkus-scylladb-orm-parent</artifactId>
-        <version>1.2.0</version>
+        <version>2.0.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -19,19 +19,17 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- The annotation processor. Compile scope, so that adding this one extension
-             to an application still generates its mappers and repositories with no extra
-             build configuration — javac picks the processor up off the compile classpath.
-             The cost is that the processor and JavaPoet also reach the application's
-             runtime classpath. Nothing at runtime references them any more (see
-             ScyllaDBOrmProcessor#registerBeans), so they are unreachable for a native
-             image; taking them out of JVM mode too means moving this to `provided` and
-             asking applications to declare the processor themselves, which is a breaking
-             change held back for a release that can carry the migration note. -->
+        <!-- The annotation processor, at provided scope so it does not reach a
+             consuming application's runtime classpath. Maven has no "annotation
+             processing only" scope and provided is not transitive, so applications have
+             to name the processor themselves - see "Upgrading to 2.0.0" in the README.
+             The integration-tests and benchmarks modules do exactly that, which keeps
+             the documented setup under test. -->
         <dependency>
             <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
             <artifactId>quarkus-scylladb-orm-processor</artifactId>
             <version>${project.version}</version>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>

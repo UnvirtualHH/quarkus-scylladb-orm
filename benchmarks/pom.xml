@@ -5,7 +5,7 @@
     <parent>
         <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
         <artifactId>quarkus-scylladb-orm-parent</artifactId>
-        <version>1.2.0</version>
+        <version>2.0.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -65,7 +65,7 @@
                     <annotationProcessorPaths>
                         <path>
                             <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
-                            <artifactId>quarkus-scylladb-orm</artifactId>
+                            <artifactId>quarkus-scylladb-orm-processor</artifactId>
                             <version>${project.version}</version>
                         </path>
                         <path>

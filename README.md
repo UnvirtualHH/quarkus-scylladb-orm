@@ -21,7 +21,7 @@ A high-performance Quarkus extension for ScyllaDB/Cassandra that provides annota
 - **Java 25+** — the published artifacts are compiled with `--release 25` (class file
   version 69). On an older JDK they fail to load with `UnsupportedClassVersionError`.
   (Quarkus 4 itself requires Java 21 and recommends 25.)
-- **Quarkus 4.x.** The last release for Quarkus 3.x is 1.1.1 — see *Upgrading to 1.2.0*.
+- **Quarkus 4.x.** The last release for Quarkus 3.x is 1.1.1 — see *Upgrading to 2.0.0*.
 - ScyllaDB or Apache Cassandra
 
 ## Installation
@@ -32,9 +32,35 @@ Add the dependency to your `pom.xml`:
 <dependency>
     <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
     <artifactId>quarkus-scylladb-orm</artifactId>
-    <version>1.2.0</version>
+    <version>2.0.0</version>
 </dependency>
 ```
+
+Then name the annotation processor, which generates the mappers and repositories from
+your `@Table` entities:
+
+```xml
+<plugin>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+                <artifactId>quarkus-scylladb-orm-processor</artifactId>
+                <version>2.0.0</version>
+            </path>
+        </annotationProcessorPaths>
+    </configuration>
+</plugin>
+```
+
+Both are needed: the processor runs inside `javac` and is deliberately kept off your
+application's runtime classpath, which means it is not pulled in transitively. Without it
+the build fails with `cannot find symbol: class PersonBaseRepository`.
+
+If you already configure `annotationProcessorPaths` for something else (Lombok, MapStruct,
+JMH), add this path to the existing list — naming any path at all turns off processor
+discovery from the classpath, so a processor you leave out stops running.
 
 ## Quick Start
 
@@ -546,15 +572,16 @@ tombstones in ScyllaDB), but it also means setting a field to `null` does **not*
 stored value — the column is left untouched. To actively clear a column, issue an explicit
 `UPDATE ... SET col = null` (or `DELETE col`) via `@Query`.
 
-### Upgrading to 1.2.0
+### Upgrading to 2.0.0
 
-**This release requires Quarkus 4.** It will not run on Quarkus 3.x; stay on 1.1.1 if you
-are not migrating yet. Work through the
+**This release requires Quarkus 4**, and it is the release that completes the module
+split. It will not run on Quarkus 3.x; stay on 1.1.1 if you are not migrating yet. Work through the
 [Quarkus 4.0 migration guide](https://github.com/quarkusio/quarkus/wiki/Migration-Guide-4.0)
 for your own code — the notes here only cover this extension.
 
-Nothing in this extension's own API changed. Entities, `@Query` methods, the generated
-repositories and every `quarkus.scylla.*` config key behave exactly as in 1.1.1.
+Nothing in this extension's own Java API changed. Entities, `@Query` methods, the
+generated repositories and every `quarkus.scylla.*` config key behave exactly as in 1.1.1
+— the breaking parts are the Quarkus floor and one build-file change, below.
 
 What changed underneath:
 
@@ -566,6 +593,37 @@ What changed underneath:
 | ScyllaDB Java driver | 4.19.2.3 → 4.19.4.0 |
 | JavaPoet (build-time only) | 0.22.0 → 0.23.0 |
 | Test artifact | `quarkus-junit5` → `quarkus-junit` |
+
+#### You must now declare the annotation processor
+
+The processor only ever runs inside `javac`, so it is no longer on your application's
+runtime classpath — it and JavaPoet are gone from your deployment. Maven has no
+"annotation processing only" scope and `provided` is not transitive, so the one thing you
+have to do by hand is name it:
+
+```xml
+<plugin>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
+                <artifactId>quarkus-scylladb-orm-processor</artifactId>
+                <version>2.0.0</version>
+            </path>
+        </annotationProcessorPaths>
+    </configuration>
+</plugin>
+```
+
+Forget it and the build fails loudly with `cannot find symbol: class
+PersonBaseRepository` — nothing is silently skipped. If you already list other paths
+(Lombok, MapStruct), append this one rather than replacing them: naming any path turns off
+classpath discovery for every processor.
+
+This finishes the module split started in 1.1.0, where the processor was separated out but
+still shipped at compile scope so that nobody's build broke. It was held for a major
+release, which this is.
 
 If your own build declares `jakarta.enterprise:jakarta.enterprise.cdi-api` explicitly,
 switch it to `jakarta.cdi:jakarta.cdi-api`. The old coordinates still resolve through a
@@ -657,23 +715,26 @@ query it. `@Query.Param` now takes a `binding`:
 
 ### Module layout
 
-| Artifact | Contains | On the runtime classpath? |
-|----------|----------|---------------------------|
-| `quarkus-scylladb-orm-api` | `@Table`, `@Column`, … and `EntityMapper` | yes |
-| `quarkus-scylladb-orm-processor` | the annotation processor and JavaPoet | yes, for now |
+| Artifact | Contains | On your runtime classpath? |
+|----------|----------|----------------------------|
+| `quarkus-scylladb-orm-api` | `@Table`, `@Column`, … and `EntityMapper` | yes (transitively) |
+| `quarkus-scylladb-orm-processor` | the annotation processor and JavaPoet | no — `javac` only |
 | `quarkus-scylladb-orm` | repositories, config, session producer | yes |
 | `quarkus-scylladb-orm-deployment` | Quarkus build steps | no (build time only) |
 
-Depend on `quarkus-scylladb-orm` as before; it pulls in the other two.
+Declare `quarkus-scylladb-orm` as a dependency and `quarkus-scylladb-orm-processor` as an
+annotation processor path; `-api` and `-deployment` come in on their own.
 
 The processor only ever runs inside `javac`, so it has no business in a deployed
-application — but Maven has no "annotation processing only" scope, and javac discovers
-processors off the compile classpath. Keeping it at compile scope is what lets adding one
-dependency generate your mappers with no further build configuration. Nothing at runtime
-references it any more, so it and JavaPoet are unreachable for a native image's analysis;
-removing them from JVM mode as well means switching that dependency to `provided` and asking
-applications to declare the processor in `annotationProcessorPaths` themselves. That is a
-breaking change, held for a release that can carry the migration note.
+application. Since 2.0.0 the runtime depends on it at `provided` scope, which keeps it and
+JavaPoet out of your deployment entirely — in exchange for the one `annotationProcessorPaths`
+entry above, because Maven has no "annotation processing only" scope and `provided` is not
+transitive.
+
+1.1.0 split the modules apart but still shipped the processor at compile scope so that no
+existing build broke; 2.0.0 finishes the job. The integration-tests and benchmarks modules
+declare the processor exactly the way an application does, so the documented setup is what
+the build actually exercises.
 
 ### Select lists and the entity mapper
 The generated mapper reads **every** mapped field of the entity, so any query that maps
