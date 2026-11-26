@@ -5,11 +5,11 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import java.util.Set;
 
-import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import io.quarkiverse.quarkus.scylladb.orm.mapping.Query;
 
 /**
  * The CQL handling in {@link QueryMethodFactory} is ~750 lines of regex and string

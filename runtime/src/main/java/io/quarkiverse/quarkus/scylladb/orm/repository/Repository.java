@@ -2,7 +2,6 @@ package io.quarkiverse.quarkus.scylladb.orm.repository;
 
 import java.util.*;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
 import com.datastax.oss.driver.api.core.CqlSession;

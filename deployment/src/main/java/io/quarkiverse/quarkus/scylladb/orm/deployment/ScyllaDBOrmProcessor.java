@@ -1,5 +1,8 @@
 package io.quarkiverse.quarkus.scylladb.orm.deployment;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import io.quarkiverse.quarkus.scylladb.orm.config.ScyllaOrmConfig;
 import io.quarkiverse.quarkus.scylladb.orm.mapping.EntityMapperRegistry;
 import io.quarkiverse.quarkus.scylladb.orm.repository.ReactiveRepositoryRegistry;
@@ -14,9 +17,6 @@ import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
 import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
 import io.quarkus.maven.dependency.ResolvedDependency;
-
-import java.util.ArrayList;
-import java.util.List;
 
 class ScyllaDBOrmProcessor {
 

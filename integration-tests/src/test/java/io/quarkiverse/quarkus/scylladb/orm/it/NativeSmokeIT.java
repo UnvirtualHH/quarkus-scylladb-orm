@@ -7,7 +7,6 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
-
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import io.quarkiverse.quarkus.scylladb.orm.it.util.RunnableOnThisHost;

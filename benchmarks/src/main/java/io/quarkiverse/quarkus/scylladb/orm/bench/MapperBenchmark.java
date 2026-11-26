@@ -8,12 +8,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import com.datastax.oss.driver.api.core.cql.Row;
-
-import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchEvent;
-import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchEventMapper;
-import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchSettings;
-import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchSettingsConverter;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -25,6 +19,13 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
+
+import com.datastax.oss.driver.api.core.cql.Row;
+
+import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchEvent;
+import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchEventMapper;
+import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchSettings;
+import io.quarkiverse.quarkus.scylladb.orm.bench.model.BenchSettingsConverter;
 
 /**
  * What the annotation processor generates, on the hot path — and what to judge it by.
