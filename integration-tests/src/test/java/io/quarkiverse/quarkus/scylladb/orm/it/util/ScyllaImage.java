@@ -11,7 +11,7 @@ package io.quarkiverse.quarkus.scylladb.orm.it.util;
  */
 public final class ScyllaImage {
 
-    private static final String DEFAULT = "scylladb/scylla:2026.3.4";
+    private static final String DEFAULT = "scylladb/scylla:2026.3.6";
 
     private ScyllaImage() {
     }

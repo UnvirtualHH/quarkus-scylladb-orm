@@ -4,7 +4,7 @@
     <parent>
         <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
         <artifactId>quarkus-scylladb-orm-parent</artifactId>
-        <version>1.1.1</version>
+        <version>1.2.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -69,9 +69,12 @@
         </dependency>
 
         <!-- Jakarta Annotations -->
+        <!-- jakarta.cdi:jakarta.cdi-api since CDI 5.0; the old
+             jakarta.enterprise:jakarta.enterprise.cdi-api coordinates only resolve
+             through a relocation POM, which warns on every build. -->
         <dependency>
-            <groupId>jakarta.enterprise</groupId>
-            <artifactId>jakarta.enterprise.cdi-api</artifactId>
+            <groupId>jakarta.cdi</groupId>
+            <artifactId>jakarta.cdi-api</artifactId>
         </dependency>
         <dependency>
             <groupId>jakarta.inject</groupId>
@@ -80,7 +83,7 @@
 
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-junit5</artifactId>
+            <artifactId>quarkus-junit</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
