@@ -5,10 +5,7 @@
     <parent>
         <groupId>io.quarkiverse</groupId>
         <artifactId>quarkiverse-parent</artifactId>
-        <!-- Pinned to 20: parent 21+ enforces an io.quarkiverse.* groupId via the
-             RequireMatchingCoordinates rule, which this private fork (de.prgrm.*) does
-             not use. The Quarkus version is bumped independently below. -->
-        <version>20</version>
+        <version>26</version>
     </parent>
     <groupId>de.prgrm.quarkus-scylladb-orm</groupId>
     <artifactId>quarkus-scylladb-orm-parent</artifactId>
@@ -70,17 +67,21 @@
 
     <build>
         <plugins>
-            <!-- Override quarkiverse-parent's impsort-maven-plugin until it supports Java 25 -->
+            <!-- The parent enforces an io.quarkiverse.* groupId from version 21 on, and
+                 this is a de.prgrm.* fork. Disabling that one execution is what lets the
+                 project track the parent again instead of staying on 20 forever; every
+                 other rule it brings still applies. -->
             <plugin>
-                <groupId>net.revelc.code</groupId>
-                <artifactId>impsort-maven-plugin</artifactId>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
                 <executions>
                     <execution>
-                        <id>sort-imports</id>
+                        <id>validate-project-structure</id>
                         <phase>none</phase>
                     </execution>
                 </executions>
             </plugin>
+
         </plugins>
         <pluginManagement>
             <plugins>

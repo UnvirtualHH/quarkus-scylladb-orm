@@ -2,9 +2,8 @@ package io.quarkiverse.quarkus.scylladb.orm.processor;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -15,7 +14,6 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
-import javax.lang.model.util.ElementFilter;
 import javax.tools.Diagnostic;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -24,8 +22,8 @@ import com.palantir.javapoet.*;
 
 import io.quarkiverse.quarkus.scylladb.orm.mapping.*;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields;
-import io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil;
 import io.quarkiverse.quarkus.scylladb.orm.processor.util.EntityFields.KeyField;
+import io.quarkiverse.quarkus.scylladb.orm.processor.util.MapperUtil;
 
 public class MapperGenerator {
 
